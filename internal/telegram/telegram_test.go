@@ -31,24 +31,24 @@ func TestPollFiltersAndAcknowledgesSavedUpdates(t *testing.T) {
 		}
 		polled = append(polled, params.Offset)
 		update := func(id, chat int, chatType, text string) string {
-			return fmt.Sprintf(`{"update_id":%d,"message":{"chat":{"id":%d,"type":%q},"text":%q}}`, id, chat, chatType, text)
+			return fmt.Sprintf(`{"update_id":%d,"message":{"message_id":%d,"chat":{"id":%d,"type":%q},"text":%q}}`, id, id+100, chat, chatType, text)
 		}
 		switch len(polled) {
 		case 1:
-			fmt.Fprintf(w, `{"ok":true,"result":[%s,%s,%s,%s]}`,
+			fmt.Fprintf(w, `{"ok":true,"result":[%s,%s,%s,%s,%s]}`,
 				update(14, 42, "private", "/approve A1"), update(12, 99, "private", "from stranger"),
-				update(13, 42, "group", "from group"), update(11, 42, "private", "/work first"))
+				update(13, 42, "group", "from group"), update(11, 42, "private", "/work first"), update(15, 42, "private", ""))
 		default:
 			fmt.Fprintf(w, `{"ok":true,"result":[%s,%s]}`,
-				update(14, 42, "private", "/approve A1"), update(15, 42, "private", "hello"))
+				update(14, 42, "private", "/approve A1"), update(16, 42, "private", "hello"))
 		}
 	}))
 	defer server.Close()
 	client := New(server.URL, testToken, 42)
-	err := client.Poll(ctx, func() int64 { return next }, func(id int64, text string) error {
-		accepted = append(accepted, fmt.Sprintf("%d:%s", id, text))
+	err := client.Poll(ctx, func() int64 { return next }, func(id, messageID int64, text string) error {
+		accepted = append(accepted, fmt.Sprintf("%d:%d:%s", id, messageID, text))
 		next = id + 1
-		if id == 15 {
+		if id == 16 {
 			cancel()
 		}
 		return nil
@@ -56,8 +56,8 @@ func TestPollFiltersAndAcknowledgesSavedUpdates(t *testing.T) {
 	if err != nil || ctx.Err() != context.Canceled {
 		t.Fatalf("Poll returned %v, context %v", err, ctx.Err())
 	}
-	want := []string{"11:/work first", "12:", "13:", "14:/approve A1", "15:hello"}
-	if !reflect.DeepEqual(accepted, want) || !reflect.DeepEqual(polled, []int64{0, 15}) {
+	want := []string{"11:111:/work first", "12:0:", "13:0:", "14:114:/approve A1", "15:0:", "16:116:hello"}
+	if !reflect.DeepEqual(accepted, want) || !reflect.DeepEqual(polled, []int64{0, 16}) {
 		t.Fatalf("accepted %q, offsets %v", accepted, polled)
 	}
 }
@@ -71,7 +71,7 @@ func TestPollStopsOnPersistenceFailure(t *testing.T) {
 	defer server.Close()
 	storeErr := errors.New("disk full")
 	client := New(server.URL, testToken, 42)
-	err := client.Poll(context.Background(), func() int64 { return 0 }, func(int64, string) error { return storeErr })
+	err := client.Poll(context.Background(), func() int64 { return 0 }, func(int64, int64, string) error { return storeErr })
 	if !errors.Is(err, storeErr) || calls != 1 {
 		t.Fatalf("got %v after %d requests", err, calls)
 	}
@@ -111,5 +111,38 @@ func TestSendPlainText(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != text {
 		t.Fatal("message did not match input")
+	}
+}
+
+func TestReact(t *testing.T) {
+	for _, result := range []string{"true", "false", "null", `{"message_id":57}`} {
+		t.Run(result, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/bot"+testToken+"/setMessageReaction" {
+					t.Error("wrong Telegram endpoint")
+				}
+				var got map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Error(err)
+				}
+				want := map[string]any{
+					"chat_id": float64(42), "message_id": float64(57),
+					"reaction": []any{map[string]any{"type": "emoji", "emoji": "👍"}},
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("reaction request = %#v, want %#v", got, want)
+				}
+				fmt.Fprintf(w, `{"ok":true,"result":%s}`, result)
+			}))
+			defer server.Close()
+			err := New(server.URL, testToken, 42).React(t.Context(), 57, "👍")
+			if result == "true" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if apiErr := (*APIError)(nil); !errors.As(err, &apiErr) || !apiErr.Uncertain() {
+				t.Fatalf("expected uncertain outcome, got %v", err)
+			}
+		})
 	}
 }

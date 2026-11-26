@@ -32,6 +32,7 @@ type task struct {
 	NextRun    time.Time     `json:"next_run,omitempty"`
 	LastResult string        `json:"last_result,omitempty"`
 	Problem    string        `json:"problem,omitempty"`
+	MessageID  int64         `json:"message_id,omitempty"`
 }
 
 type turn struct {
@@ -41,7 +42,9 @@ type turn struct {
 }
 
 type delivery struct {
-	Text      string    `json:"text"`
+	Text      string    `json:"text,omitempty"`
+	MessageID int64     `json:"message_id,omitempty"`
+	Emoji     string    `json:"emoji,omitempty"`
 	Sent      int       `json:"sent_bytes,omitempty"`
 	Sending   bool      `json:"sending,omitempty"`
 	Failures  int       `json:"failures,omitempty"`
@@ -90,7 +93,7 @@ func load(dir string) (state, error) {
 		return state{}, errors.New("incomplete engine state")
 	}
 	for id, t := range s.Tasks {
-		if t == nil || t.ID != id {
+		if t == nil || t.ID != id || t.MessageID < 0 || (t.Every != 0 && t.MessageID != 0) {
 			return state{}, fmt.Errorf("invalid task %d in engine state", id)
 		}
 		switch t.Status {
@@ -100,11 +103,18 @@ func load(dir string) (state, error) {
 		}
 	}
 	for i, d := range s.Outbox {
-		if d.Sent < 0 || d.Sent >= len(d.Text) || !utf8.RuneStart(d.Text[d.Sent]) || d.Failures < 0 || d.Failures > 7 || i != 0 && d.Sending {
+		if !d.validPayload() || d.Failures < 0 || d.Failures > 7 || i != 0 && d.Sending {
 			return state{}, fmt.Errorf("invalid outbox entry %d in engine state", i)
 		}
 	}
 	return s, nil
+}
+
+func (d delivery) validPayload() bool {
+	if d.Emoji != "" {
+		return d.MessageID > 0 && d.Text == "" && d.Sent == 0 && !d.Notice
+	}
+	return d.MessageID == 0 && d.Sent >= 0 && d.Sent < len(d.Text) && utf8.RuneStart(d.Text[d.Sent])
 }
 
 func ensureStateDir(dir string) error {

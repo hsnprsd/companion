@@ -38,7 +38,7 @@ func run(ctx context.Context) error {
 	bot := telegram.New(cfg.TelegramURL, cfg.Token, cfg.ChatID)
 	return supervise(ctx,
 		app.Work,
-		func(ctx context.Context) error { return app.Deliver(ctx, bot.Send) },
+		func(ctx context.Context) error { return app.Deliver(ctx, bot.Send, bot.React) },
 		func(ctx context.Context) error { return bot.Poll(ctx, app.Offset, app.Accept) },
 	)
 }

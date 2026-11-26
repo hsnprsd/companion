@@ -10,7 +10,7 @@ Use this glossary with the [setup and usage guide](README.md) and the [Codex run
 | Delegated task | One request for work that the user gives with `/work`. Use `/task` with the task ID to see its status. |
 | Durable workspace | The agent's writable home at `/workspace`. Only the runner mounts the `workspace` volume. Files survive container replacement. |
 | Notebook | Persistent notes, indexed by key, for preferences, decisions, and work context. Use `/notes`, `/note`, and `/forget` to manage them. |
-| Outbox | The saved queue of messages that the app has not finished sending to Telegram. |
+| Outbox | The saved queue of text and reactions that the app has not finished sending to Telegram. |
 | Recurring task | Work that the user schedules with `/every`. The first run is due after one full interval. Later runs do not need new Telegram messages. |
 | Runner | The separate container that runs Codex app-server and its native tools. It does not mount app state. |
 | Step | One model run for a task. A new attempt uses a new Codex thread and the same workspace. |

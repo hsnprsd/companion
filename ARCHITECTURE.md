@@ -9,7 +9,7 @@ See [README.md](README.md) for setup and [GLOSSARY.md](GLOSSARY.md) for terms.
 ```mermaid
 flowchart LR
     User[Private Telegram chat] <--> TG[Telegram Bot API]
-    TG <-->|HTTPS: getUpdates / sendMessage| App[Go app]
+    TG <-->|HTTPS: getUpdates / sendMessage / setMessageReaction| App[Go app]
     App <-->|Loopback WebSocket: turns| Runner[Codex app-server]
     App <--> State[(State volume)]
     Config[Read-only Companion config] --> App
@@ -23,9 +23,9 @@ flowchart LR
 | Component | Responsibility | Source |
 | --- | --- | --- |
 | App entry point | Validate configuration and supervise the service loops. | [`main.go`](main.go), [`config.go`](config.go) |
-| Telegram client | Poll for updates, accept text only from the configured private chat, and send plain text. | [`internal/telegram`](internal/telegram) |
+| Telegram client | Poll for text updates from the configured private chat. Send plain text and reactions. | [`internal/telegram`](internal/telegram) |
 | Engine | Handle commands, save state, select work, build prompts, and drain the outbox. | [`internal/engine`](internal/engine) |
-| Codex client | Run one ephemeral app-server turn and return the final text. | [`internal/codex`](internal/codex) |
+| Codex client | Run one ephemeral app-server turn and return the final text and any reaction request. | [`internal/codex`](internal/codex) |
 
 [Compose](compose.yaml) runs two services with separate filesystems. The app joins the runner's network namespace to reach `ws://127.0.0.1:4500`. Neither service publishes a port. The runner joins a Docker bridge with egress, which also lets the app reach Telegram. If you replace the runner, recreate the app so that it joins the new network namespace.
 
@@ -53,10 +53,10 @@ The app uses one versioned JSON snapshot, not a database or a Codex session. [`s
 | Record | Contents |
 | --- | --- |
 | Telegram cursor | Next update ID and time of the last saved update. |
-| Tasks | Task ID, kind, instructions, status, revision, schedule, last result, and any problem. |
+| Tasks | Task ID, kind, instructions, status, revision, schedule, last result, any problem, and the Telegram message ID when available. |
 | Conversation history | User text and the saved assistant reply for each conversation task. |
 | Notebook | User-managed text entries indexed by key. |
-| Outbox and incidents | Queued text, confirmed byte position, send-in-progress marker, retry time, and records of failed or uncertain deliveries. |
+| Outbox and incidents | Queued text or reactions, confirmed text byte position, send-in-progress marker, retry time, and records of failed or uncertain deliveries. |
 
 For each commit, the engine changes state under its mutex. It writes the snapshot to a temporary file in the state directory, syncs and closes the file, renames it to `state.json`, and syncs the directory. Only then does it publish the new Telegram cursor. A save error stops the engine and cancels the active step. The app does not acknowledge an update on the basis of a failed save.
 
@@ -65,7 +65,7 @@ A snapshot commit can include an update and all its state changes. It cannot inc
 ## 4. Telegram input and command routing
 
 1. The Telegram client calls `getUpdates` with the saved offset, a 25-second long-poll timeout, and a batch limit of 25. It sorts updates by ID and skips non-positive IDs and IDs below the current cursor.
-2. It only passes text to the engine when `chat.id` matches the configured ID and `chat.type` is `private`. Other updates can advance the cursor but cannot create work.
+2. It only passes text and its Telegram message ID to the engine when `chat.id` matches the configured ID and `chat.type` is `private`. Other updates can advance the cursor but cannot create work.
 3. The engine saves `update_id + 1` with the changes and replies from the update. The next poll uses that offset to acknowledge earlier updates. After six days without a saved update, the engine requests offset `0` because Telegram can start a new ID sequence.
 
 Plain text creates a conversation task. The app handles slash commands locally:
@@ -103,7 +103,11 @@ Each prompt includes the current request, task kind, the notebook, the last task
 
 The [Codex client](internal/codex/client.go) opens one WebSocket per step. It sends `initialize` and `initialized`, checks Linux and `CODEX_HOME`, and looks for the exact configured model in the OpenAI `model/list` catalog. It requests a fresh ephemeral `thread/start` with provider fallback disabled. It checks the reported model, local environment, workspace roots, permission profile, approval policy, and that the shell has network access before sending `turn/start`.
 
-The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time, buffers a limited set of early turn notifications until it knows the turn ID, and rejects server requests. It declares no dynamic tools. App-server runs native tools directly. The client returns the final assistant text, or the last assistant message if app-server did not mark a final answer. It does not stream partial text to Telegram.
+The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time and buffers a limited set of early turn notifications and reaction calls until it knows the turn ID. App-server runs native tools directly. The client accepts only the `telegram_react` server tool call and only for an active turn with a saved Telegram message ID. It rejects other server requests, including approval requests.
+
+The tool accepts one supported emoji and no target parameters. The app uses the configured chat and the message that supplied the current request. A `/change` to a one-time task replaces the target with the command message. Recurring tasks and tasks without a saved message ID do not get the tool. A successful call records the request in memory, not in Telegram. The engine queues it only when it saves a successful result for the current revision.
+
+The client returns the final assistant text, or the last assistant message if app-server did not mark a final answer. The agent can request a reaction without a text reply. The client does not stream partial text to Telegram.
 
 The client rejects model changes and reroutes. It does not retry turns or select a fallback model. On cancellation or an early error with a known turn ID, it attempts `turn/interrupt` for up to one second. Neither an interrupt nor a WebSocket close proves that a native tool stopped. See the [runner contract](internal/codex/README.md) for protocol and account limits.
 
@@ -117,11 +121,11 @@ The shell boundary does not control app-server network requests. Native live web
 
 ## 8. Telegram output and delivery
 
-The outbox is first-in, first-out. The delivery loop splits messages at up to 4,096 UTF-16 code units without splitting a Unicode code point. It sends plain text with link previews disabled.
+The outbox is first-in, first-out. The delivery loop splits messages at up to 4,096 UTF-16 code units without splitting a Unicode code point. It sends plain text with link previews disabled. It sends each reaction in one `setMessageReaction` request.
 
-Before each part, the loop saves `sending`. A response with a Telegram message ID confirms acceptance, not that the user read the message. The engine advances the confirmed byte position or removes the completed entry. On a definite temporary rejection, it saves an exponential retry delay of up to one minute, unless Telegram supplies a longer delay. A delayed entry holds its place in the queue.
+Before each text part or reaction, the loop saves `sending`. A Telegram message ID confirms text acceptance, and a `true` result confirms reaction acceptance. Neither result confirms that the user saw it. The engine advances the confirmed text byte position or removes the completed entry. On a definite temporary rejection, it saves an exponential retry delay of up to one minute, unless Telegram supplies a longer delay. A delayed entry holds its place in the queue.
 
-On a permanent rejection or an unknown result, the engine records a delivery incident and replaces the rest of the entry with a notice. A disconnect, a timeout, or a restart with `sending` still set can make the result unknown. The engine does not resend the uncertain part. If the notice also fails permanently or has an unknown result, the engine records the failure without generating a second notice. Use `/tasks` or `/task ID` to recover the last saved task result.
+On a permanent rejection or an unknown result, the engine records a delivery incident and replaces the rest of the entry with a notice. A disconnect, a timeout, or a restart with `sending` still set can make the result unknown. The engine does not resend the uncertain text part or reaction. If the notice also fails permanently or has an unknown result, the engine records the failure without generating a second notice. Use `/tasks` or `/task ID` to recover the last saved task result.
 
 ## 9. Shutdown and recovery
 
@@ -129,7 +133,7 @@ On a permanent rejection or an unknown result, the engine records a delivery inc
 | --- | --- |
 | An update and its effects were committed | Resume polling from the saved cursor. |
 | A task was `running` | Make it `ready` and start a new ephemeral step. Partial output is not a checkpoint. The prompt tells the agent to check the workspace before it repeats work. |
-| A message part was marked `sending` | Record an uncertain delivery and queue a notice. Resume other messages from their confirmed positions and saved retry times. |
+| A text part or reaction was marked `sending` | Record an uncertain delivery and queue a notice. Resume other deliveries from their confirmed positions and saved retry times. |
 
 The app does not provide exactly-once execution for model turns, native tools, or Telegram delivery. The state-volume lock prevents two engines from writing one snapshot. It does not coordinate separate deployments.
 

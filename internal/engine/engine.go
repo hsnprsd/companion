@@ -15,9 +15,9 @@ import (
 	"unicode/utf8"
 )
 
-// Runner runs one model step and returns when its context ends.
+// Runner runs one model step. Return an emoji only if canReact is true.
 type Runner interface {
-	Run(context.Context, string) (string, error)
+	Run(ctx context.Context, prompt string, canReact bool) (text, emoji string, err error)
 }
 
 type activeStep struct {
@@ -132,8 +132,9 @@ func (e *Engine) Offset() int64 {
 }
 
 // Accept saves an update and its effects before returning success. Call it
-// in update ID order. Pass an empty string to save only the cursor.
-func (e *Engine) Accept(updateID int64, text string) error {
+// in update ID order. Pass empty text to save only the cursor and a message ID
+// of zero if there is no reaction target.
+func (e *Engine) Accept(updateID, messageID int64, text string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.failed != nil {
@@ -149,13 +150,16 @@ func (e *Engine) Accept(updateID int64, text string) error {
 	if updateID < e.nextOffset(now) {
 		return nil
 	}
+	if messageID < 0 {
+		return errors.New("invalid Telegram message ID")
+	}
 	if !utf8.ValidString(text) {
 		return errors.New("invalid Telegram message encoding")
 	}
 	err := e.commit(func(s *state) {
 		s.Offset, s.LastUpdate = updateID+1, now
 		if strings.TrimSpace(text) != "" {
-			e.acceptText(s, text)
+			e.acceptText(s, messageID, text)
 		}
 	})
 	if err == nil && e.active != nil && e.state.Tasks[e.active.id].Revision != e.active.revision {

@@ -53,6 +53,8 @@ Use Docker Engine with Compose v2 or later. Use a Linux host or Docker VM that p
 
 A recurring task first runs after its interval. Companion can send a result without a new Telegram message. Companion can change or delete files in its workspace without asking. Stopping a task does not undo file changes.
 
+Companion can react to a chat message or a one-time work request, but not to an older message or a recurring task. Try `React to this message with 👍 and do not send a text reply.`
+
 ## Access and storage
 
 - **Durable workspace:** The runner mounts the named `workspace` volume at `/workspace`. This is the agent's working directory and shell home. The agent can use native tools there without file approvals. The Go app does not mount this volume.
@@ -93,4 +95,4 @@ tests/docker/run.sh
 tests/docker/runner.sh
 ```
 
-The app test uses fake Telegram and Codex peers. It checks update filtering, duplicate updates, conversation, delegated and recurring work, notebook recall, removed commands, and restart during active work. The runner probe uses real Codex with a local model fixture. It checks that native shell tools can change workspace files without approval, that the files survive runner replacement, and that the shell can reach a local HTTP fixture but cannot directly read sign-in files. Both tests use disposable volumes and do not contact Telegram or OpenAI.
+The app test uses fake Telegram and Codex peers. It checks update filtering, duplicate updates, conversation, reactions, delegated and recurring work, notebook recall, removed commands, and restart during active work. The runner probe uses real Codex with a local model fixture. It checks the reaction tool protocol. It also checks that native shell tools can change workspace files without approval, that the files survive runner replacement, and that the shell can reach a local HTTP fixture but cannot directly read sign-in files. Both tests use disposable volumes and do not contact Telegram or OpenAI.

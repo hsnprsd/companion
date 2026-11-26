@@ -33,15 +33,15 @@ func (c Client) restrictions() params {
 	}
 }
 
-// Run sends prompt to a fresh ephemeral thread and returns its final assistant
-// message. The runner handles its native tools. Run does not retry a turn.
-func (c Client) Run(ctx context.Context, prompt string) (string, error) {
+// Run returns the final text and optional Telegram reaction from a fresh
+// ephemeral thread. It does not send the reaction or retry the turn.
+func (c Client) Run(ctx context.Context, prompt string, canReact bool) (text, emoji string, err error) {
 	if c.Model == "" || strings.TrimSpace(c.Model) != c.Model {
-		return "", errors.New("codex: specify an exact model ID")
+		return "", "", errors.New("codex: specify an exact model ID")
 	}
 	s, err := connect(ctx, c.URL)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer s.close()
 
@@ -53,22 +53,25 @@ func (c Client) Run(ctx context.Context, prompt string) (string, error) {
 		"clientInfo":   params{"name": "companion", "title": "Companion", "version": "0.1.0"},
 		"capabilities": params{"experimentalApi": true, "requestAttestation": false},
 	}, &init, nil); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if init.CodexHome != codexHome || init.PlatformOS != "linux" {
-		return "", errors.New("codex: unexpected runner platform or CODEX_HOME")
+		return "", "", errors.New("codex: unexpected runner platform or CODEX_HOME")
 	}
 	if err := s.send(ctx, message{Method: "initialized"}); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := c.checkCatalog(ctx, s); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	start := c.restrictions()
 	start["ephemeral"] = true
 	start["modelProvider"] = provider
 	start["allowProviderModelFallback"] = false
+	if canReact {
+		start["dynamicTools"] = []params{reactionTool()}
+	}
 	// Responses Lite uses the native standalone search extension.
 	start["config"] = params{"web_search": "live", "features": params{"standalone_web_search": true}}
 	var started struct {
@@ -99,10 +102,10 @@ func (c Client) Run(ctx context.Context, prompt string) (string, error) {
 		} `json:"activePermissionProfile"`
 	}
 	if err := s.request(ctx, "thread/start", start, &started, nil); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if started.Model != c.Model || (started.Thread.Model != nil && *started.Thread.Model != c.Model) || started.ModelProvider != provider {
-		return "", fmt.Errorf("codex: app-server did not select configured model %q", c.Model)
+		return "", "", fmt.Errorf("codex: app-server did not select configured model %q", c.Model)
 	}
 	if started.Thread.ID == "" || !started.Thread.Ephemeral || len(started.Thread.Environments) != 1 ||
 		started.Thread.Environments[0].ID != "local" || started.Thread.Environments[0].CWD != workspaceDir ||
@@ -111,14 +114,18 @@ func (c Client) Run(ctx context.Context, prompt string) (string, error) {
 		started.Sandbox.Type != "workspaceWrite" || started.Sandbox.NetworkAccess == nil || !*started.Sandbox.NetworkAccess ||
 		!started.Sandbox.ExcludeSlashTmp || !started.Sandbox.ExcludeTmpdirEnvVar ||
 		(len(started.Sandbox.WritableRoots) != 0 && (len(started.Sandbox.WritableRoots) != 1 || started.Sandbox.WritableRoots[0] != workspaceDir)) {
-		return "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
+		return "", "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
 	}
 
-	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model}
+	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, canReact: canReact}
 	turn := c.restrictions()
 	turn["threadId"] = t.threadID
 	turn["input"] = []params{{"type": "text", "text": prompt, "text_elements": []any{}}}
-	return t.run(ctx, turn)
+	text, err = t.run(ctx, turn)
+	if err != nil {
+		return "", "", err
+	}
+	return text, t.reaction, nil
 }
 
 func (c Client) checkCatalog(ctx context.Context, s *session) error {
@@ -155,7 +162,8 @@ type turnRun struct {
 	threadID, turnID string
 	model            string
 	final, last      string
-	done             bool
+	reaction         string
+	canReact, done   bool
 }
 
 type threadItem struct {
@@ -185,7 +193,7 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 	var pending []message
 	size := 0
 	if err := t.s.request(ctx, "turn/start", p, &started, func(m message) error {
-		if !turnEvent(m) {
+		if !turnEvent(m) && !(t.canReact && len(m.ID) != 0 && m.Method == "item/tool/call") {
 			if len(m.ID) != 0 {
 				return t.s.reject(ctx, m, -32601, "server request not allowed")
 			}
@@ -222,13 +230,17 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 			return "", err
 		}
 	}
-	if t.final != "" {
-		return t.final, nil
+	text := t.final
+	if text == "" {
+		text = t.last
 	}
-	if t.last != "" {
-		return t.last, nil
+	if t.reaction != "" && (text == "" || strings.TrimSpace(text) == "NO_REPLY") {
+		return "", nil
 	}
-	return "", errors.New("codex: turn completed without an assistant answer")
+	if text == "" {
+		return "", errors.New("codex: turn completed without an assistant answer")
+	}
+	return text, nil
 }
 
 func turnEvent(m message) bool {
@@ -247,6 +259,9 @@ func (t *turnRun) dispatch(ctx context.Context, m message) error {
 		return nil
 	}
 	if len(m.ID) != 0 {
+		if m.Method == "item/tool/call" && t.canReact && !t.done {
+			return t.react(ctx, m)
+		}
 		return t.s.reject(ctx, m, -32601, "server request not allowed")
 	}
 	if !turnEvent(m) {

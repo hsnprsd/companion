@@ -36,10 +36,10 @@ func positiveID(text string) (int64, bool) {
 	return id, err == nil && id > 0 && text == strconv.FormatInt(id, 10)
 }
 
-func (e *Engine) acceptText(s *state, text string) {
+func (e *Engine) acceptText(s *state, messageID int64, text string) {
 	cmd, args := word(text)
 	if !strings.HasPrefix(cmd, "/") {
-		t := s.newTask("conversation", text)
+		t := s.newTask("conversation", text, messageID)
 		s.History = append(s.History, turn{TaskID: t.ID, User: text})
 		return
 	}
@@ -63,7 +63,7 @@ func (e *Engine) acceptText(s *state, text string) {
 			usage(" TEXT")
 			return
 		}
-		t := s.newTask("work", args)
+		t := s.newTask("work", args, messageID)
 		s.say(fmt.Sprintf("Task %d is ready.", t.ID))
 	case "/every":
 		interval, text := word(args)
@@ -72,7 +72,7 @@ func (e *Engine) acceptText(s *state, text string) {
 			usage(" DURATION TEXT (for example, /every 24h Check the workspace)")
 			return
 		}
-		t := s.newTask("periodic", text)
+		t := s.newTask("periodic", text, 0)
 		t.Every, t.NextRun, t.Status = d, e.now().Add(d), scheduled
 		s.say(fmt.Sprintf("Task %d runs every %s. Its first run is due at %s.", t.ID, d, displayTime(t.NextRun)))
 	case "/task", "/change", "/stop", "/retry":
@@ -86,7 +86,7 @@ func (e *Engine) acceptText(s *state, text string) {
 			}
 			return
 		}
-		s.taskCommand(cmd, id, rest)
+		s.taskCommand(cmd, id, rest, messageID)
 	case "/note", "/forget":
 		key, value := word(args)
 		if key == "" || (cmd == "/note") != (value != "") {
@@ -109,14 +109,14 @@ func (e *Engine) acceptText(s *state, text string) {
 	}
 }
 
-func (s *state) newTask(kind, text string) *task {
+func (s *state) newTask(kind, text string, messageID int64) *task {
 	s.TaskSeq++
-	t := &task{ID: s.TaskSeq, Kind: kind, Text: text, Status: ready, Revision: 1}
+	t := &task{ID: s.TaskSeq, Kind: kind, Text: text, Status: ready, Revision: 1, MessageID: messageID}
 	s.Tasks[t.ID] = t
 	return t
 }
 
-func (s *state) taskCommand(cmd string, id int64, text string) {
+func (s *state) taskCommand(cmd string, id int64, text string, messageID int64) {
 	t := s.Tasks[id]
 	if t == nil {
 		s.say(fmt.Sprintf("Task %d was not found.", id))
@@ -129,6 +129,9 @@ func (s *state) taskCommand(cmd string, id int64, text string) {
 	switch cmd {
 	case "/change":
 		t.Text, t.Status, t.Problem = text, ready, ""
+		if t.Every == 0 {
+			t.MessageID = messageID
+		}
 	case "/stop":
 		t.Status = stopped
 	case "/retry":

@@ -52,13 +52,15 @@ send_chat() {
 send() { send_chat "$chat" private "$1"; }
 acked() { fx offset "$next"; }
 
-printf '%s\n' 'Check filtering, deduplication, conversation and delegated work.'
+printf '%s\n' 'Check filtering, deduplication, conversation, reactions, and delegated work.'
 test "$(app id -u)" = 1000
 app test ! -e /workspace
 send_chat 9876543211 private 'wrong-chat-fixture'
 send_chat "$chat" supergroup 'wrong-type-fixture'
+hello_id=$((next + 1000))
 send 'hello-fixture'
 acked
+fx wait reactions "$hello_id:👍" 1
 wait_message 'fixture conversation reply'
 fx replay 102 "$chat" private 'hello-fixture'
 delegate_id=$next
@@ -68,6 +70,7 @@ wait_message 'Task 2 is ready.'
 wait_message 'fixture delegated result'
 count_is turns 'hello-fixture' 1
 count_is turns 'delegated-fixture' 1
+count_is reactions '' 1
 
 printf '%s\n' 'Check recurring work without a new Telegram update.'
 send '/every 2s periodic-fixture'
@@ -119,5 +122,13 @@ acked
 wait_message 'survivor: durable fixture value'
 count_is turns 'delegated-fixture' 1
 count_is messages 'fixture resumed result' 1
+
+printf '%s\n' 'Check a reaction without a text reply.'
+reaction_id=$((next + 1000))
+send 'reaction-only-fixture'
+acked
+fx wait reactions "$reaction_id:👍" 1
+count_is messages 'NO_REPLY' 0
+count_is reactions '' 2
 
 printf '%s\n' 'Docker integration passed.'

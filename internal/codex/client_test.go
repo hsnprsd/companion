@@ -20,8 +20,8 @@ import (
 const testModel = "model-exact"
 
 type outcome struct {
-	text string
-	err  error
+	text, emoji string
+	err         error
 }
 
 type peer struct {
@@ -55,7 +55,7 @@ func testRunner(t *testing.T) (Client, <-chan *websocket.Conn) {
 	return Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Model: testModel}, connections
 }
 
-func launch(t *testing.T, client Client, connections <-chan *websocket.Conn) (*peer, <-chan outcome, context.CancelFunc) {
+func launch(t *testing.T, client Client, connections <-chan *websocket.Conn, canReact bool) (*peer, <-chan outcome, context.CancelFunc) {
 	t.Helper()
 	peerCtx, cancelPeer := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancelPeer)
@@ -63,8 +63,8 @@ func launch(t *testing.T, client Client, connections <-chan *websocket.Conn) (*p
 	t.Cleanup(cancel)
 	results := make(chan outcome, 1)
 	go func() {
-		text, err := client.Run(ctx, "fixture prompt")
-		results <- outcome{text, err}
+		text, emoji, err := client.Run(ctx, "fixture prompt", canReact)
+		results <- outcome{text, emoji, err}
 	}()
 	select {
 	case ws := <-connections:
@@ -168,7 +168,7 @@ func assertRestrictions(t *testing.T, args params) {
 	check(t, args["sandbox"], nil)
 }
 
-func (p *peer) thread(id string) {
+func (p *peer) thread(id string, canReact bool) {
 	p.t.Helper()
 	m := p.read("thread/start")
 	args := decode[params](p.t, m.Params)
@@ -180,7 +180,15 @@ func (p *peer) thread(id string) {
 	check(p.t, cfg["features"], params{"standalone_web_search": true})
 	check(p.t, cfg["web_search"], "live")
 	check(p.t, cfg["permissions"], nil)
-	check(p.t, args["dynamicTools"], nil)
+	if canReact {
+		want, err := json.Marshal([]params{reactionTool()})
+		if err != nil {
+			p.t.Fatal(err)
+		}
+		check(p.t, args["dynamicTools"], decode[[]any](p.t, want))
+	} else {
+		check(p.t, args["dynamicTools"], nil)
+	}
 	p.reply(m, threadResult(id))
 }
 
@@ -224,7 +232,7 @@ func (p *peer) assertRejection(id string, code int) {
 
 func TestRunProtocol(t *testing.T) {
 	client, conns := testRunner(t)
-	p, results, _ := launch(t, client, conns)
+	p, results, _ := launch(t, client, conns, false)
 	p.init()
 	list := p.read("model/list")
 	// Picker ID alone is not an exact model match.
@@ -232,7 +240,7 @@ func TestRunProtocol(t *testing.T) {
 	list = p.read("model/list")
 	check(t, decode[params](t, list.Params)["cursor"], "page-2")
 	p.reply(list, params{"data": []params{{"id": "picker", "model": testModel}}, "nextCursor": nil})
-	p.thread("thread-1")
+	p.thread("thread-1", false)
 	turn := p.turn("thread-1")
 
 	p.serverRequest("escalate", "item/permissions/requestApproval", params{})
@@ -260,10 +268,10 @@ func TestRunProtocol(t *testing.T) {
 	check(t, waitResult(t, results), outcome{text: "The final answer."})
 
 	// The next step opens another socket and starts another ephemeral thread.
-	p, results, _ = launch(t, client, conns)
+	p, results, _ = launch(t, client, conns, false)
 	p.init()
 	p.catalog()
-	p.thread("thread-2")
+	p.thread("thread-2", false)
 	p.reply(p.turn("thread-2"), turnResult("turn-2", "inProgress"))
 	done = turnResult("turn-2", "completed", item("agentMessage", "", "A second answer"))
 	done["threadId"] = "thread-2"
@@ -273,7 +281,7 @@ func TestRunProtocol(t *testing.T) {
 
 func TestRunRejectsMissingModel(t *testing.T) {
 	client, conns := testRunner(t)
-	p, results, _ := launch(t, client, conns)
+	p, results, _ := launch(t, client, conns, false)
 	p.init()
 	p.reply(p.read("model/list"), params{"data": []params{{"id": testModel, "model": "MODEL-EXACT"}}})
 	if result := waitResult(t, results); result.err == nil || !strings.Contains(result.err.Error(), "not in the app-server catalog") {
@@ -297,7 +305,7 @@ func TestRunRejectsUnexpectedThreadSettings(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, conns := testRunner(t)
-			p, results, _ := launch(t, client, conns)
+			p, results, _ := launch(t, client, conns, false)
 			p.init()
 			p.catalog()
 			result := threadResult("thread")
@@ -314,10 +322,10 @@ func TestRunTurnErrors(t *testing.T) {
 	for _, name := range []string{"reroute", "cancel", "failure", "interrupted", "no answer", "disconnect"} {
 		t.Run(name, func(t *testing.T) {
 			client, conns := testRunner(t)
-			p, results, cancel := launch(t, client, conns)
+			p, results, cancel := launch(t, client, conns, false)
 			p.init()
 			p.catalog()
-			p.thread("thread")
+			p.thread("thread", false)
 			p.reply(p.turn("thread"), turnResult("turn", "inProgress"))
 			done := params{"threadId": "thread", "turn": params{"id": "turn"}}
 			state := done["turn"].(params)

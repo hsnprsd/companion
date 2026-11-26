@@ -14,8 +14,9 @@ import (
 
 type runnerFunc func(context.Context, string) (string, error)
 
-func (r runnerFunc) Run(ctx context.Context, prompt string) (string, error) {
-	return r(ctx, prompt)
+func (r runnerFunc) Run(ctx context.Context, prompt string, _ bool) (string, string, error) {
+	text, err := r(ctx, prompt)
+	return text, "", err
 }
 
 var echoRunner runnerFunc = func(context.Context, string) (string, error) { return "done", nil }
@@ -39,7 +40,7 @@ func closeEngine(t *testing.T, e *Engine) {
 
 func acceptUpdate(t *testing.T, e *Engine, id int64, text string) {
 	t.Helper()
-	if err := e.Accept(id, text); err != nil {
+	if err := e.Accept(id, 0, text); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -131,7 +132,7 @@ func TestAcceptCursorAndStateLock(t *testing.T) {
 		t.Fatalf("cursor and effects were not saved together: %+v", s)
 	}
 	closeEngine(t, e)
-	if err := e.Accept(103, "/work after close"); err == nil {
+	if err := e.Accept(103, 0, "/work after close"); err == nil {
 		t.Fatal("closed engine accepted an update")
 	}
 	e = openEngine(t, dir, echoRunner)
@@ -181,7 +182,7 @@ func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(e.dir, "state.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := e.Accept(7, "/work must not run")
+	err := e.Accept(7, 0, "/work must not run")
 	if err == nil || e.Offset() != 0 {
 		t.Fatalf("failed Accept returned %v, offset %d", err, e.Offset())
 	}
@@ -191,7 +192,7 @@ func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
 	if got := e.Deliver(context.Background(), func(context.Context, string) error {
 		t.Error("sent a reply for an unsaved update")
 		return nil
-	}); got != err {
+	}, noReaction(t)); got != err {
 		t.Fatalf("Deliver returned %v after failed save, want %v", got, err)
 	}
 }

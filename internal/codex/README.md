@@ -1,6 +1,6 @@
 # Codex runner contract
 
-Use Codex CLI `0.172.0`. The client opens one WebSocket and starts one ephemeral thread per `Run`. It checks the OpenAI model catalog, the selected thread model, and model-change notifications. It does not retry a turn or select a fallback model. The client registers no dynamic tools and rejects server requests, including requests for more permissions.
+Use Codex CLI `0.172.0`. The client opens one WebSocket and starts one ephemeral thread per `Run`. It checks the OpenAI model catalog, the selected thread model, and model-change notifications. It does not retry a turn or select a fallback model. For a turn with a Telegram message target, the client registers `telegram_react`. It accepts one supported emoji, not a chat or message ID. The client verifies the thread and turn IDs before it accepts the call. It returns the emoji to the engine only after the turn succeeds. It rejects other server requests, including requests for more permissions.
 
 ## Deploy
 

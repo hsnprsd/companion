@@ -26,7 +26,17 @@ func nextSend(t *testing.T, e *Engine) (string, time.Duration) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return part, delay
+	if part.Emoji != "" {
+		t.Fatalf("unexpected reaction: %+v", part)
+	}
+	return part.Text, delay
+}
+
+func noReaction(t *testing.T) func(context.Context, int64, string) error {
+	return func(_ context.Context, id int64, emoji string) error {
+		t.Errorf("unexpected reaction %s to message %d", emoji, id)
+		return nil
+	}
 }
 
 func recordSend(t *testing.T, e *Engine, part string, err error) {
@@ -127,7 +137,7 @@ func TestUTF16ChunksResumeWithoutReplayingConfirmedPart(t *testing.T) {
 		first = part
 		cancel()
 		return nil
-	})
+	}, noReaction(t))
 	if !errors.Is(err, context.Canceled) || units(first) != 4095 || !strings.HasPrefix(message, first) {
 		t.Fatalf("bad chunk or loop result: %d units, %v", units(first), err)
 	}

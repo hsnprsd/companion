@@ -1,4 +1,4 @@
-// Package telegram exchanges plain text with a single private chat.
+// Package telegram exchanges messages and sends reactions in one private chat.
 package telegram
 
 import (
@@ -36,6 +36,7 @@ func New(baseURL, token string, chatID int64) *Client {
 type update struct {
 	ID      int64 `json:"update_id"`
 	Message *struct {
+		ID   int64  `json:"message_id"`
 		Text string `json:"text"`
 		Chat struct {
 			ID   int64  `json:"id"`
@@ -104,8 +105,8 @@ func (c *Client) request(ctx context.Context, method string, params any, result 
 }
 
 // Poll accepts updates in order. Accept must save the cursor and any work it
-// creates before returning. Ignored updates advance the cursor with empty text.
-func (c *Client) Poll(ctx context.Context, offset func() int64, accept func(int64, string) error) error {
+// creates before returning. Ignored updates pass no message ID or text.
+func (c *Client) Poll(ctx context.Context, offset func() int64, accept func(updateID, messageID int64, text string) error) error {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		var updates []update
@@ -144,11 +145,12 @@ func (c *Client) Poll(ctx context.Context, offset func() int64, accept func(int6
 			if u.ID <= 0 || u.ID < offset() {
 				continue
 			}
+			var messageID int64
 			var text string
-			if u.Message != nil && u.Message.Chat.ID == c.chatID && u.Message.Chat.Type == "private" {
-				text = u.Message.Text
+			if u.Message != nil && u.Message.Chat.ID == c.chatID && u.Message.Chat.Type == "private" && u.Message.Text != "" {
+				messageID, text = max(0, u.Message.ID), u.Message.Text
 			}
-			if err := accept(u.ID, text); err != nil {
+			if err := accept(u.ID, messageID, text); err != nil {
 				return fmt.Errorf("save Telegram update: %w", err)
 			}
 		}
@@ -168,6 +170,24 @@ func (c *Client) Send(ctx context.Context, text string) error {
 		return err
 	}
 	if result.MessageID == nil {
+		return &APIError{uncertain: true}
+	}
+	return nil
+}
+
+// React sets the bot's reaction to one message in the configured chat.
+func (c *Client) React(ctx context.Context, messageID int64, emoji string) error {
+	if messageID <= 0 || emoji == "" {
+		return &APIError{code: http.StatusBadRequest}
+	}
+	var result bool
+	if err := c.request(ctx, "setMessageReaction", map[string]any{
+		"chat_id": c.chatID, "message_id": messageID,
+		"reaction": []map[string]string{{"type": "emoji", "emoji": emoji}},
+	}, &result); err != nil {
+		return err
+	}
+	if !result {
 		return &APIError{uncertain: true}
 	}
 	return nil

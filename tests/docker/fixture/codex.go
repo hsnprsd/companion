@@ -74,20 +74,23 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		return err
 	}
 	var start struct {
-		Model       string          `json:"model"`
-		Provider    string          `json:"modelProvider"`
-		Permissions string          `json:"permissions"`
-		CWD         string          `json:"cwd"`
-		Approval    string          `json:"approvalPolicy"`
-		Ephemeral   bool            `json:"ephemeral"`
-		Tools       json.RawMessage `json:"dynamicTools"`
+		Model       string `json:"model"`
+		Provider    string `json:"modelProvider"`
+		Permissions string `json:"permissions"`
+		CWD         string `json:"cwd"`
+		Approval    string `json:"approvalPolicy"`
+		Ephemeral   bool   `json:"ephemeral"`
+		Tools       []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"dynamicTools"`
 	}
 	m, err = read("thread/start", &start)
 	if err != nil {
 		return err
 	}
-	if start.Model != model || start.Provider != "openai" || start.Permissions != "companion-workspace" || start.CWD != "/workspace" || start.Approval != "never" || !start.Ephemeral || len(start.Tools) != 0 {
-		return fmt.Errorf("wrong model, thread restrictions, or unexpected dynamic tools: %s", m.Params)
+	if start.Model != model || start.Provider != "openai" || start.Permissions != "companion-workspace" || start.CWD != "/workspace" || start.Approval != "never" || !start.Ephemeral {
+		return fmt.Errorf("wrong model or thread restrictions: %s", m.Params)
 	}
 	const thread = "fixture-thread"
 	const turn = "fixture-turn"
@@ -123,6 +126,13 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if err := json.Unmarshal([]byte("{"+data), &p); err != nil {
 		return fmt.Errorf("invalid Companion turn context: %w", err)
 	}
+	if p.Kind == "periodic" {
+		if len(start.Tools) != 0 {
+			return fmt.Errorf("unexpected dynamic tool for periodic work")
+		}
+	} else if len(start.Tools) != 1 || start.Tools[0].Type != "function" || start.Tools[0].Name != "telegram_react" {
+		return fmt.Errorf("expected the Telegram reaction tool: %+v", start.Tools)
+	}
 	if err := reply(m, fields{"turn": fields{"id": turn, "status": "inProgress"}}); err != nil {
 		return err
 	}
@@ -139,6 +149,22 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 			return err
 		}
 		return reply(m, fields{})
+	}
+	if name == "hello-fixture" || name == "reaction-only-fixture" {
+		if err := wsjson.Write(ctx, ws, fields{"id": 100, "method": "item/tool/call", "params": fields{
+			"threadId": thread, "turnId": turn, "callId": "fixture-call", "namespace": nil,
+			"tool": "telegram_react", "arguments": fields{"emoji": "👍"},
+		}}); err != nil {
+			return err
+		}
+		m, err := read("", nil)
+		if err != nil {
+			return err
+		}
+		var result struct{ Success bool }
+		if string(m.ID) != "100" || json.Unmarshal(m.Result, &result) != nil || !result.Success {
+			return fmt.Errorf("reaction tool failed: %+v", m)
+		}
 	}
 	final, err := scriptedAnswer(p)
 	if err != nil {
@@ -162,6 +188,8 @@ func scriptedAnswer(p prompt) (string, error) {
 	switch name {
 	case "hello-fixture":
 		return "fixture conversation reply", nil
+	case "reaction-only-fixture":
+		return "NO_REPLY", nil
 	case "delegated-fixture":
 		return "fixture delegated result", nil
 	case "periodic-fixture":
