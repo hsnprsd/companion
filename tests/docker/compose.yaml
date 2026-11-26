@@ -1,0 +1,49 @@
+services:
+  app:
+    build:
+      context: ../..
+      target: app
+    network_mode: service:fixture
+    depends_on:
+      fixture:
+        condition: service_healthy
+    init: true
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      COMPANION_CONFIG: /etc/companion/companion.json
+      COMPANION_STATE_DIR: /app/state
+      COMPANION_WORKSPACE: /app/workspace
+      COMPANION_TELEGRAM_URL: http://127.0.0.1:8080
+      COMPANION_EXTERNAL_DIR: /app/external
+    volumes:
+      - state:/app/state
+      - workspace:/app/workspace
+      - ${FIXTURE_DIR:?Run tests/docker/run.sh}/companion.json:/etc/companion/companion.json:ro,Z
+      - ${FIXTURE_DIR}/external/manual:/app/external/manual:ro,Z
+
+  fixture:
+    build:
+      context: ../..
+      target: fixture
+    command: [serve]
+    healthcheck:
+      test: [CMD, /usr/local/bin/fixture, status]
+      interval: 1s
+      timeout: 2s
+      retries: 20
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [fixtures]
+
+volumes:
+  state:
+  workspace:
+
+networks:
+  fixtures:
+    internal: true

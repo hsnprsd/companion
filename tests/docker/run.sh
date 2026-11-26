@@ -1,0 +1,159 @@
+#!/bin/sh
+set -eu
+
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+cd "$root"
+export FIXTURE_DIR
+FIXTURE_DIR=$(mktemp -d)
+project=companion-integration-$$
+
+compose() {
+    docker compose --env-file /dev/null -p "$project" -f tests/docker/compose.yaml "$@"
+}
+
+cleanup() {
+    rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ]; then
+        compose logs --no-color >&2 || true
+        compose exec -T fixture /usr/local/bin/fixture status >&2 || true
+    fi
+    compose down -v --remove-orphans --rmi local || rc=1
+    rm -rf -- "$FIXTURE_DIR"
+    exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Use only these synthetic files. Do not resolve a production token or chat ID.
+printf '%s\n' '{"model":"fixture-model-v1","tg-bot-token":"123456789:docker_fixture_token_123456789","tg-chat-id":9876543210}' \
+    > "$FIXTURE_DIR/companion.json"
+mkdir -p "$FIXTURE_DIR/external/manual"
+printf '%s\n' 'fixture external data' > "$FIXTURE_DIR/external/manual/guide.txt"
+chmod 0444 "$FIXTURE_DIR/companion.json" "$FIXTURE_DIR/external/manual/guide.txt"
+compose up --build --detach --wait --wait-timeout 30
+
+fx() { compose exec -T fixture /usr/local/bin/fixture "$@"; }
+app() { compose exec -T app "$@"; }
+wait_message() { fx wait messages "$1" "${2:-1}"; }
+count_is() {
+    actual=$(fx count "$1" "$2")
+    if [ "$actual" != "$3" ]; then
+        printf >&2 'Expected %s %s containing <%s>; got %s\n' "$3" "$1" "$2" "$actual"
+        exit 1
+    fi
+}
+
+chat=9876543210
+next=100
+send_chat() {
+    fx send "$next" "$1" "$2" "$3"
+    next=$((next + 1))
+}
+send() { send_chat "$chat" private "$1"; }
+acked() { fx offset "$next"; }
+
+printf '%s\n' 'Check filtering, deduplication, conversation and delegated work.'
+test "$(app id -u)" = 1000
+send_chat 9876543211 private 'wrong-chat-fixture'
+send_chat "$chat" supergroup 'wrong-type-fixture'
+send 'hello-fixture'
+acked
+wait_message 'fixture conversation reply'
+fx replay 102 "$chat" private 'hello-fixture'
+delegate_id=$next
+send '/work delegated-fixture'
+acked
+wait_message 'Task 2 is ready.'
+wait_message 'fixture delegated result'
+count_is turns 'hello-fixture' 1
+count_is turns 'delegated-fixture' 1
+
+printf '%s\n' 'Check recurring work without a new Telegram update.'
+send '/every 2s periodic-fixture'
+acked
+wait_message 'Task 3 runs every 2s.'
+wait_message 'fixture proactive result' 2
+send '/stop 3'
+wait_message 'Task 3: stopped.'
+
+printf '%s\n' 'Check notebook inspection, recall, correction and deletion.'
+send '/note color amber'
+wait_message 'Saved note "color".'
+send 'recall-original'
+wait_message 'fixture recall-original'
+send '/note color teal'
+send '/notes'
+wait_message 'color: teal'
+send 'recall-edited'
+wait_message 'fixture recall-edited'
+send '/forget color'
+wait_message 'Removed note "color".'
+send '/notes'
+wait_message 'The notebook is empty.'
+send 'recall-deleted'
+wait_message 'fixture recall-deleted'
+send '/note survivor durable fixture value'
+wait_message 'Saved note "survivor".'
+
+printf '%s\n' 'Check the external read-only mount and grant boundaries.'
+send 'read-alias-blocked'
+wait_message 'fixture read-alias-blocked'
+send '/grant missing'
+wait_message 'Access "missing" is not available.'
+send '/grant manual'
+wait_message 'Granted read access to @manual/.'
+send 'read-alias-granted'
+wait_message 'fixture read-alias-granted'
+send 'write-alias-blocked'
+wait_message 'fixture write-alias-blocked'
+send '/revoke manual'
+wait_message 'Revoked access to @manual/.'
+send 'read-alias-revoked'
+wait_message 'fixture read-alias-revoked'
+
+printf '%s\n' 'Check exact write approval; keep one action pending.'
+send '/work write-b'
+wait_message 'To approve this action only, send /approve 1'
+wait_message '{"tool":"write_file","path":"write-b.txt","content":"exact fixture write-b\n"}'
+send '/work write-a'
+wait_message 'To approve this action only, send /approve 2'
+wait_message '{"tool":"write_file","path":"write-a.txt","content":"exact fixture write-a\n"}'
+app test ! -e /app/workspace/write-a.txt
+app test ! -e /app/workspace/write-b.txt
+send_chat 9876543211 private '/approve 2'
+acked
+app test ! -e /app/workspace/write-a.txt
+count_is messages 'Approved action 2' 0
+send '/approve 2'
+acked
+fx wait turns 'write-a:applied' 1
+wait_message ', action 2: applied.'
+app sh -ec 'printf "exact fixture write-a\n" | cmp - /app/workspace/write-a.txt'
+file_before=$(app stat -c '%i:%s:%y:%z' /app/workspace/write-a.txt)
+
+printf '%s\n' 'Restart with an active turn and a pending approval.'
+app_id=$(compose ps -q app)
+compose stop app
+test "$(docker inspect --format '{{.State.ExitCode}}' "$app_id")" = 0
+compose start app
+# Do not send a Telegram update until the active task resumes on its own.
+fx wait turns 'write-a:applied' 2
+wait_message 'fixture write-a done'
+app test ! -e /app/workspace/write-b.txt
+fx replay "$delegate_id" "$chat" private '/work delegated-fixture'
+send '/notes'
+wait_message 'survivor: durable fixture value'
+send '/approve 1'
+acked
+wait_message 'fixture write-b done'
+app sh -ec 'printf "exact fixture write-b\n" | cmp - /app/workspace/write-b.txt'
+count_is turns 'delegated-fixture' 1
+count_is messages 'To approve this action only, send /approve 2' 1
+count_is messages ', action 2: applied.' 1
+count_is messages 'fixture write-a done' 1
+count_is messages 'fixture write-b done' 1
+test "$(app stat -c '%i:%s:%y:%z' /app/workspace/write-a.txt)" = "$file_before"
+
+printf '%s\n' 'Docker integration passed.'

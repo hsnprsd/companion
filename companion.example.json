@@ -1,0 +1,5 @@
+{
+  "model": "gpt-6-luna",
+  "tg-bot-token": "replace-with-your-bot-token",
+  "tg-chat-id": 0
+}

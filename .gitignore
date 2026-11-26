@@ -1,2 +1,9 @@
+/companion.json
+/companion.json.*
+/companion.json~
+/.companion-config-*
 /.bot-token
+/tg-bot-token
 /.tg-chat-id
+/state/
+/workspace/

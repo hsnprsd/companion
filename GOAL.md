@@ -27,13 +27,13 @@ Give Companion two kinds of memory:
 
 ## Agent runtime options
 
-Use the existing ChatGPT subscription. Do not require a separately billed OpenAI API key for the first release. Use Codex app-server for the first milestone. Read the exact model ID from [companion.json](companion.json). The Docker probe confirmed that the ChatGPT subscription can complete a model turn.
+Use the existing ChatGPT subscription. Do not require a separately billed OpenAI API key for the first release. Use Codex app-server in a separate runner container. Read the exact model ID from the local `companion.json` file. Use [companion.example.json](companion.example.json) as a template. Let Codex use its normal tools, including shell commands in runner scratch space and live OpenAI web search.
 
-Let the Go application own task state, the notebook, approvals, and Telegram messages. Do not make a runner session the only record of delegated work. Restrict the runner's tools and credentials so it cannot bypass Companion's approvals.
+Let the Go application own task state, the notebook, approvals, and Telegram messages. Do not make a runner session the only record of delegated work. Keep the durable workspace and all service files out of the runner container. Apply grants and approvals in the Go service before file actions in the durable workspace or on an external mount.
 
 | Option | Benefit | Cost |
 | --- | --- | --- |
-| Run [Codex app-server](https://developers.openai.com/codex/app-server) as a subprocess | Use OpenAI's ChatGPT sign-in and control the runner from Go through JSONL. | Integrate with the Codex run lifecycle and verify that its tools fit Companion's permission rules. |
+| Run [Codex app-server](https://developers.openai.com/codex/app-server) as a separate service | Use OpenAI's ChatGPT sign-in and control the runner from Go through JSON-RPC. | Integrate with the Codex run lifecycle and verify that its tools fit Companion's permission rules. |
 | Run Pi as a subprocess | Use Pi's ChatGPT sign-in and reuse its agent loop, tools, streaming, and context compaction through JSONL RPC. | Add a Node.js runtime and integrate with the Pi run lifecycle. |
 | Write the loop in Go | Control each model call, tool call, pause, and retry. Use a Go model library where possible. | Find a supported model interface that uses the subscription. The standard OpenAI Go SDK uses separately billed API access. |
 
@@ -49,7 +49,6 @@ Companion must work in its own isolated workspace, keep task state and a durable
 
 Verify these capabilities together in Docker. A single sample task does not define the milestone. Use the working version to decide which capabilities and integrations to add next.
 
-## Open decisions
+## First release access
 
-- Choose the initial tools and integrations, their access limits, and which actions require approval.
-- Choose where to store the notebook and how to inspect, correct, and delete notes in Telegram.
+Use the runner's scratch space for shell work. Use the Go file tools for the durable workspace and for read-only external mounts. Require explicit approval for each durable workspace write and an explicit grant to read from each external mount. Use `/notes`, `/note`, and `/forget` to manage the notebook in Telegram.

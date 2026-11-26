@@ -1,0 +1,87 @@
+services:
+  app:
+    build:
+      context: .
+      target: app
+    # Codex requires authentication on non-loopback listeners. Share only the
+    # network namespace so the app can reach the runner's loopback WebSocket.
+    network_mode: service:codex
+    depends_on:
+      - codex
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    environment:
+      COMPANION_CONFIG: /etc/companion/companion.json
+      COMPANION_STATE_DIR: /app/state
+      COMPANION_WORKSPACE: /app/workspace
+      COMPANION_CODEX_URL: ws://127.0.0.1:4500
+      COMPANION_TELEGRAM_URL: ${COMPANION_TELEGRAM_URL:-https://api.telegram.org}
+      COMPANION_EXTERNAL_DIR: ${COMPANION_EXTERNAL_DIR:-}
+    volumes:
+      - type: volume
+        source: workspace
+        target: /app/workspace
+      - type: volume
+        source: state
+        target: /app/state
+      - type: bind
+        source: ${COMPANION_CONFIG_SOURCE:-./companion.json}
+        target: /etc/companion/companion.json
+        read_only: true
+        bind: {create_host_path: false, selinux: Z}
+
+  codex:
+    build:
+      context: .
+      target: runner
+    command:
+      - --listen
+      - ws://127.0.0.1:4500
+      - -c
+      - 'web_search="live"'
+      - -c
+      - 'default_permissions="companion-scratch"'
+      - -c
+      - 'permissions.companion-scratch={filesystem={":minimal"="read","/scratch"="write","/scratch/.codex"="deny","/scratch/.agents"="deny"},network={enabled=false}}'
+      - -c
+      - 'projects."/scratch".trust_level="untrusted"'
+      - -c
+      - 'shell_environment_policy={inherit="none",set={HOME="/scratch",TMPDIR="/scratch",PATH="/usr/local/bin:/usr/bin:/bin"}}'
+      - -c
+      - 'mcp_servers={}'
+      - -c
+      - 'approval_policy="never"'
+      - -c
+      - 'cli_auth_credentials_store="file"'
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./docker/codex-seccomp.json
+    tmpfs:
+      - /tmp
+      - /scratch:uid=1000,gid=1000,mode=0700,size=256m
+    volumes:
+      - type: volume
+        source: codex-auth
+        target: /home/node/.codex
+        volume: {nocopy: true}
+    networks: [egress]
+
+volumes:
+  workspace:
+  state:
+  codex-auth:
+    external: true
+    name: companion-codex-auth
+
+networks:
+  egress:
+    driver: bridge
