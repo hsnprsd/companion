@@ -34,7 +34,7 @@ func TestReactionOnlySurvivesRestart(t *testing.T) {
 	closeEngine(t, e)
 	e = openEngine(t, dir, r)
 	runJob(t, e)
-	if s := stored(t, e); s.Tasks[1].Status != complete || s.History[0].Assistant != "Requested reaction: 👍" || len(s.Outbox) != 1 {
+	if s := stored(t, e); len(s.Pending) != 0 || s.History[0].Assistant != "Requested reaction: 👍" || len(s.Outbox) != 1 {
 		t.Fatalf("reaction did not complete the conversation: %+v", s)
 	}
 	closeEngine(t, e)
@@ -57,46 +57,18 @@ func TestReactionOnlySurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestReactionFromReplacedStepIsDiscarded(t *testing.T) {
-	started := make(chan struct{})
-	r := reactionRunner(func(ctx context.Context, prompt string, _ bool) (string, string, error) {
-		if strings.Contains(prompt, `"user_request":"old"`) {
-			close(started)
-			<-ctx.Done()
-		}
-		return "", "👍", nil
-	})
-	e := openEngine(t, t.TempDir(), r)
-	reactToMessage(t, e, 1, 10, "/work old")
-	job := jobFor(t, e)
-	done := make(chan error, 1)
-	go func() { done <- job() }()
-	receive(t, started)
-	reactToMessage(t, e, 2, 11, "/change 1 new")
-	if err := receive(t, done); err != nil {
-		t.Fatal(err)
-	}
-	runJob(t, e)
-	if s := stored(t, e); len(s.Outbox) != 3 || s.Outbox[2].MessageID != 11 || s.Outbox[2].Emoji != "👍" {
-		t.Fatalf("wrong reaction after /change: %+v", s.Outbox)
-	}
-}
-
-func TestPeriodicStepHasNoReactionTarget(t *testing.T) {
+func TestRequestWithoutMessageIDCannotReact(t *testing.T) {
 	r := reactionRunner(func(_ context.Context, _ string, canReact bool) (string, string, error) {
 		if canReact {
-			t.Error("recurring task can react")
+			t.Error("reaction tool available without a message ID")
 		}
-		return "NO_UPDATE", "👍", nil
+		return "Reply", "👍", nil
 	})
 	e := openEngine(t, t.TempDir(), r)
-	now := time.Now()
-	e.now = func() time.Time { return now }
-	reactToMessage(t, e, 1, 10, "/every 1s Check the workspace")
-	now = now.Add(time.Second)
+	acceptUpdate(t, e, 1, "React and reply")
 	runJob(t, e)
-	if s := stored(t, e); len(s.Outbox) != 1 || s.Outbox[0].Emoji != "" {
-		t.Fatalf("recurring task queued a reaction: %+v", s.Outbox)
+	if s := stored(t, e); len(s.Outbox) != 1 || s.Outbox[0].Emoji != "" || s.Outbox[0].Text != "Reply" {
+		t.Fatalf("expected only a reply: %+v", s.Outbox)
 	}
 }
 

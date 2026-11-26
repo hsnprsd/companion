@@ -31,7 +31,7 @@ func run(ctx context.Context) error {
 	}
 	app, err := engine.Open(cfg.StateDir, codex.Client{URL: cfg.CodexURL, Model: cfg.Model, ThinkingLevel: cfg.ThinkingLevel})
 	if err != nil {
-		return fmt.Errorf("open task state: %w", err)
+		return fmt.Errorf("open chat state: %w", err)
 	}
 	defer app.Close()
 

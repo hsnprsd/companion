@@ -144,7 +144,7 @@ func (s *state) reportDelivery(reason, summary string) {
 		return
 	}
 	s.Outbox[0] = delivery{
-		Text:   summary + ": " + reason + ". Companion did not resend it. Use /tasks or /task ID to check results.",
+		Text:   summary + ": " + reason + ". Companion did not resend it. If you missed a reply, ask Companion to repeat it.",
 		Notice: true,
 	}
 }

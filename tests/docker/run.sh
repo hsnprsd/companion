@@ -52,7 +52,7 @@ send_chat() {
 send() { send_chat "$chat" private "$1"; }
 acked() { fx offset "$next"; }
 
-printf '%s\n' 'Check filtering, deduplication, conversation, reactions, and delegated work.'
+printf '%s\n' 'Check filtering, deduplication, conversation, and reactions.'
 test "$(app id -u)" = 1000
 app test ! -e /workspace
 send_chat 9876543211 private 'wrong-chat-fixture'
@@ -63,49 +63,39 @@ acked
 fx wait reactions "$hello_id:👍" 1
 wait_message 'fixture conversation reply'
 fx replay 102 "$chat" private 'hello-fixture'
-delegate_id=$next
-send '/work delegated-fixture'
-acked
-wait_message 'Task 2 is ready.'
-wait_message 'fixture delegated result'
+send '/status'
+wait_message 'Companion is idle.'
 count_is turns 'hello-fixture' 1
-count_is turns 'delegated-fixture' 1
 count_is reactions '' 1
 
-printf '%s\n' 'Check recurring work without a new Telegram update.'
-send '/every 2s periodic-fixture'
-acked
-wait_message 'Task 3 runs every 2s.'
-wait_message 'fixture proactive result' 2
-send '/stop 3'
-wait_message 'Task 3: stopped.'
-
-printf '%s\n' 'Check that a note request reaches the runner as conversation.'
-send 'Remember that I prefer short summaries.'
-wait_message 'fixture note request'
-
 printf '%s\n' 'Check that the removed commands do not create work.'
-for command in '/grant manual' '/revoke manual' '/access' '/approve 1' '/deny 1' '/note color amber' '/notes' '/forget color'; do
+for command in '/grant manual' '/revoke manual' '/access' '/approve 1' '/deny 1' '/note color amber' '/notes' '/forget color' '/work removed-fixture' \
+    '/every 2s removed-fixture' '/tasks' '/task 1' '/change 1 text' '/stop 1' '/retry 1'; do
     send "$command"
 done
-wait_message 'Unknown command. Use /help to see the commands.' 8
+wait_message 'Unknown command. Use /help to see the commands.' 15
+count_is turns '' 1
 
-printf '%s\n' 'Restart with an active turn.'
-send '/work restart-fixture'
-acked
+printf '%s\n' 'Restart with an active request and a queued note request.'
+send 'restart-fixture'
 fx wait turns 'restart-fixture' 1
+send 'Remember that I prefer short summaries.'
+acked
+count_is turns 'Remember that I prefer short summaries.' 0
+send '/status'
+wait_message 'Requests in queue: 1.'
 app_id=$(compose ps -q app)
 compose stop app
 test "$(docker inspect --format '{{.State.ExitCode}}' "$app_id")" = 0
 compose start app
-# Do not send a Telegram update until the active task resumes on its own.
+# Do not send a Telegram update until both saved requests finish.
 fx wait turns 'restart-fixture' 2
 wait_message 'fixture resumed result'
-fx replay "$delegate_id" "$chat" private '/work delegated-fixture'
+wait_message 'fixture note request'
 send '/help'
 acked
-wait_message 'Send a message to talk or manage notes.'
-count_is turns 'delegated-fixture' 1
+wait_message 'Send a message to ask a question, request work, or manage notes.'
+count_is turns 'Remember that I prefer short summaries.' 1
 count_is messages 'fixture resumed result' 1
 
 printf '%s\n' 'Check a reaction without a text reply.'

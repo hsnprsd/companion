@@ -46,7 +46,7 @@ func acceptUpdate(t *testing.T, e *Engine, id int64, text string) {
 
 func jobFor(t *testing.T, e *Engine) func() error {
 	t.Helper()
-	job, _, err := e.nextWork(context.Background())
+	job, err := e.nextWork(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,29 +123,29 @@ func TestAcceptCursorAndStateLock(t *testing.T) {
 		closeEngine(t, other)
 		t.Fatal("second engine opened the same directory")
 	}
-	acceptUpdate(t, e, 100, "/work original")
-	acceptUpdate(t, e, 100, "/work duplicate")
+	acceptUpdate(t, e, 100, "original")
+	acceptUpdate(t, e, 100, "duplicate")
 	acceptUpdate(t, e, 102, "")
 	s := stored(t, e)
-	if s.Offset != 103 || len(s.Tasks) != 1 || s.Tasks[1].Text != "original" || len(s.Outbox) != 1 {
+	if s.Offset != 103 || len(s.Pending) != 1 || s.Pending[0].Text != "original" || len(s.History) != 0 || len(s.Outbox) != 0 {
 		t.Fatalf("cursor and effects were not saved together: %+v", s)
 	}
 	closeEngine(t, e)
-	if err := e.Accept(103, 0, "/work after close"); err == nil {
+	if err := e.Accept(103, 0, "after close"); err == nil {
 		t.Fatal("closed engine accepted an update")
 	}
 	e = openEngine(t, dir, echoRunner)
 	if got := e.Offset(); got != 103 {
 		t.Fatalf("offset after reopen = %d, want 103", got)
 	}
-	acceptUpdate(t, e, 101, "/work duplicate after reopen")
+	acceptUpdate(t, e, 101, "duplicate after reopen")
 	now := s.LastUpdate.Add(cursorLifetime)
 	e.now = func() time.Time { return now }
 	if got := e.Offset(); got != 0 {
 		t.Fatalf("expired offset = %d, want 0", got)
 	}
-	acceptUpdate(t, e, 8, "/work new sequence")
-	if s := stored(t, e); s.Offset != 9 || !s.LastUpdate.Equal(now) || len(s.Tasks) != 2 {
+	acceptUpdate(t, e, 8, "new sequence")
+	if s := stored(t, e); s.Offset != 9 || !s.LastUpdate.Equal(now) || len(s.Pending) != 2 {
 		t.Fatalf("new sequence not saved: %+v", s)
 	}
 }
@@ -153,25 +153,25 @@ func TestAcceptCursorAndStateLock(t *testing.T) {
 func TestOpenRejectsOldSnapshotWithoutChangingIt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	const old = `{"version":1,"tasks":{},"notebook":{},"grants":{"reference":true}}`
+	const old = `{"version":2,"tasks":{},"notebook":{}}`
 	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if e, err := Open(dir, echoRunner); err == nil {
 		closeEngine(t, e)
-		t.Fatal("opened a version 1 snapshot")
-	} else if !strings.Contains(err.Error(), "unsupported engine state version 1") {
+		t.Fatal("opened a version 2 snapshot")
+	} else if !strings.Contains(err.Error(), "unsupported engine state version 2") {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != old {
-		t.Fatalf("version 1 state changed: %s, %v", data, err)
+		t.Fatalf("version 2 state changed: %s, %v", data, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	e := openEngine(t, dir, echoRunner)
-	acceptUpdate(t, e, 1, "/work start fresh")
-	if s := stored(t, e); s.Version != stateVersion || len(s.Tasks) != 1 {
+	acceptUpdate(t, e, 1, "start fresh")
+	if s := stored(t, e); s.Version != stateVersion || len(s.Pending) != 1 {
 		t.Fatalf("did not create a new snapshot: %+v", s)
 	}
 }
@@ -181,7 +181,7 @@ func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(e.dir, "state.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := e.Accept(7, 0, "/work must not run")
+	err := e.Accept(7, 0, "must not run")
 	if err == nil || e.Offset() != 0 {
 		t.Fatalf("failed Accept returned %v, offset %d", err, e.Offset())
 	}
@@ -205,10 +205,6 @@ func TestNoteRequestsUseConversation(t *testing.T) {
 		return "fixture reply", nil
 	})
 	dir := t.TempDir()
-	const legacy = `{"colour":"legacy-only-value"}`
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"version":2,"tasks":{},"notebook":`+legacy+`}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	e := openEngine(t, dir, r)
 	acceptUpdate(t, e, 1, remember)
 	runJob(t, e)
@@ -218,61 +214,16 @@ func TestNoteRequestsUseConversation(t *testing.T) {
 	runJob(t, e)
 	for i, want := range []string{remember, forget} {
 		var input struct {
-			Kind    string          `json:"kind"`
-			Request string          `json:"user_request"`
-			History []turn          `json:"conversation_history"`
-			Legacy  json.RawMessage `json:"notebook"`
+			Request string `json:"user_request"`
+			History []turn `json:"conversation_history"`
 		}
 		decodePrompt(t, prompts[i], &input)
-		if input.Kind != "conversation" || input.Request != want || len(input.Legacy) != 0 {
+		if input.Request != want {
 			t.Fatalf("step %d received the wrong note request context: %+v", i, input)
 		}
 		if len(input.History) != i || i == 1 && (input.History[0].User != remember || input.History[0].Assistant != "fixture reply") {
 			t.Fatalf("step %d received the wrong conversation history: %+v", i, input.History)
 		}
-	}
-	if s := stored(t, e); string(s.LegacyNotebook) != legacy {
-		t.Fatal("saving new state did not preserve the retired notebook")
-	}
-}
-
-func TestRecurringWorkKeepsCadenceAfterRestart(t *testing.T) {
-	now := time.Now().Truncate(time.Second)
-	runs := 0
-	r := runnerFunc(func(_ context.Context, _ string) (string, error) {
-		runs++
-		if runs == 1 {
-			return "Periodic finding.", nil
-		}
-		return "NO_UPDATE", nil
-	})
-	dir := t.TempDir()
-	e := openEngine(t, dir, r)
-	e.now = func() time.Time { return now }
-	acceptUpdate(t, e, 1, "/every 500ms too fast")
-	acceptUpdate(t, e, 2, "/every 2s check")
-	if s := stored(t, e); len(s.Tasks) != 1 || !s.Tasks[1].NextRun.Equal(now.Add(2*time.Second)) || jobFor(t, e) != nil {
-		t.Fatalf("unexpected schedule state: %+v", s)
-	}
-	closeEngine(t, e)
-	e = openEngine(t, dir, r)
-	now = now.Add(11 * time.Second)
-	e.now = func() time.Time { return now }
-	runJob(t, e)
-	s := stored(t, e)
-	if s.Tasks[1].Status != scheduled || !s.Tasks[1].NextRun.Equal(now.Add(time.Second)) || !strings.Contains(outboxText(s), "Periodic finding.") {
-		t.Fatalf("missed ticks were not skipped or feedback was not saved: %+v", s.Tasks[1])
-	}
-	now = now.Add(time.Second)
-	before := len(s.Outbox)
-	runJob(t, e)
-	if s := stored(t, e); len(s.Outbox) != before || s.Tasks[1].LastResult != "Periodic finding." {
-		t.Fatal("NO_UPDATE sent a reply or erased the previous finding")
-	}
-	acceptUpdate(t, e, 3, "/stop 1")
-	now = now.Add(time.Minute)
-	if jobFor(t, e) != nil {
-		t.Fatal("stopped periodic task is still due")
 	}
 }
 

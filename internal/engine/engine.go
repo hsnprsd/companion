@@ -21,8 +21,7 @@ type Runner interface {
 }
 
 type activeStep struct {
-	id, revision int64
-	cancel       context.CancelFunc
+	cancel context.CancelFunc
 }
 
 // Engine owns the snapshot and serializes all durable state changes.
@@ -37,7 +36,6 @@ type Engine struct {
 	failed      error
 	runner      Runner
 	active      *activeStep
-	lastTaskID  int64
 	working     bool
 	delivering  bool
 	workWake    chan struct{}
@@ -76,20 +74,9 @@ func Open(stateDir string, runner Runner) (*Engine, error) {
 		workWake: make(chan struct{}, 1), sendWake: make(chan struct{}, 1),
 		now: time.Now, stepTimeout: 5 * time.Minute,
 	}
-	interrupted := len(s.Outbox) != 0 && s.Outbox[0].Sending
-	for _, t := range s.Tasks {
-		interrupted = interrupted || t.Status == running
-	}
-	if interrupted {
+	if len(s.Outbox) != 0 && s.Outbox[0].Sending {
 		err := e.commit(func(s *state) {
-			for _, t := range s.Tasks {
-				if t.Status == running {
-					t.Status = ready
-				}
-			}
-			if len(s.Outbox) != 0 && s.Outbox[0].Sending {
-				s.loseDelivery("service stopped before it recorded the send result")
-			}
+			s.loseDelivery("service stopped before it recorded the send result")
 		})
 		if err != nil {
 			lock.Close()
@@ -156,16 +143,12 @@ func (e *Engine) Accept(updateID, messageID int64, text string) error {
 	if !utf8.ValidString(text) {
 		return errors.New("invalid Telegram message encoding")
 	}
-	err := e.commit(func(s *state) {
+	return e.commit(func(s *state) {
 		s.Offset, s.LastUpdate = updateID+1, now
 		if strings.TrimSpace(text) != "" {
 			e.acceptText(s, messageID, text)
 		}
 	})
-	if err == nil && e.active != nil && e.state.Tasks[e.active.id].Revision != e.active.revision {
-		e.active.cancel()
-	}
-	return err
 }
 
 func wake(ch chan struct{}) {

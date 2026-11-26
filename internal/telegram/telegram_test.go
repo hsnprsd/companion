@@ -37,7 +37,7 @@ func TestPollFiltersAndAcknowledgesSavedUpdates(t *testing.T) {
 		case 1:
 			fmt.Fprintf(w, `{"ok":true,"result":[%s,%s,%s,%s,%s]}`,
 				update(14, 42, "private", "/approve A1"), update(12, 99, "private", "from stranger"),
-				update(13, 42, "group", "from group"), update(11, 42, "private", "/work first"), update(15, 42, "private", ""))
+				update(13, 42, "group", "from group"), update(11, 42, "private", "first"), update(15, 42, "private", ""))
 		default:
 			fmt.Fprintf(w, `{"ok":true,"result":[%s,%s]}`,
 				update(14, 42, "private", "/approve A1"), update(16, 42, "private", "hello"))
@@ -56,7 +56,7 @@ func TestPollFiltersAndAcknowledgesSavedUpdates(t *testing.T) {
 	if err != nil || ctx.Err() != context.Canceled {
 		t.Fatalf("Poll returned %v, context %v", err, ctx.Err())
 	}
-	want := []string{"11:111:/work first", "12:0:", "13:0:", "14:114:/approve A1", "15:0:", "16:116:hello"}
+	want := []string{"11:111:first", "12:0:", "13:0:", "14:114:/approve A1", "15:0:", "16:116:hello"}
 	if !reflect.DeepEqual(accepted, want) || !reflect.DeepEqual(polled, []int64{0, 16}) {
 		t.Fatalf("accepted %q, offsets %v", accepted, polled)
 	}

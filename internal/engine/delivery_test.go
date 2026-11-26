@@ -51,7 +51,8 @@ func TestDefiniteRejectionRetriesAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	e := openEngine(t, dir, echoRunner)
 	e.now = func() time.Time { return now }
-	acceptUpdate(t, e, 1, "/work remember this")
+	acceptUpdate(t, e, 1, "remember this")
+	runJob(t, e)
 	part, _ := nextSend(t, e)
 	if s := stored(t, e); part == "" || !s.Outbox[0].Sending {
 		t.Fatal("send started without durable outbox intent")
@@ -86,8 +87,9 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			e := openEngine(t, dir, echoRunner)
-			acceptUpdate(t, e, 1, "/work task")
-			acceptUpdate(t, e, 2, "/task 99")
+			acceptUpdate(t, e, 1, "first request")
+			runJob(t, e)
+			acceptUpdate(t, e, 2, "/status")
 			original, _ := nextSend(t, e)
 			if tc.restart {
 				closeEngine(t, e)
@@ -100,7 +102,7 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 				t.Fatalf("incorrect uncertainty handling; notice=%q, incidents=%+v", notice, s.Incidents)
 			}
 			recordSend(t, e, notice, sendError{uncertain: true})
-			if next, _ := nextSend(t, e); next != "Task 99 was not found." {
+			if next, _ := nextSend(t, e); next != "Companion is idle." {
 				t.Fatalf("unknown result for the notice blocked the queue or repeated the original: %q", next)
 			}
 		})
@@ -110,7 +112,7 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 func TestPermanentRejectionDoesNotBlockOutbox(t *testing.T) {
 	e := openEngine(t, t.TempDir(), echoRunner)
 	acceptUpdate(t, e, 1, "/help")
-	acceptUpdate(t, e, 2, "/tasks")
+	acceptUpdate(t, e, 2, "/status")
 	part, _ := nextSend(t, e)
 	recordSend(t, e, part, sendError{permanent: true})
 	notice, _ := nextSend(t, e)
@@ -118,7 +120,7 @@ func TestPermanentRejectionDoesNotBlockOutbox(t *testing.T) {
 		t.Fatalf("expected a permanent rejection notice, got %q", notice)
 	}
 	recordSend(t, e, notice, sendError{permanent: true})
-	if next, _ := nextSend(t, e); next != "No tasks." {
+	if next, _ := nextSend(t, e); next != "Companion is idle." {
 		t.Fatalf("permanent rejection blocked later messages: %q", next)
 	}
 }

@@ -136,12 +136,8 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if err := json.Unmarshal([]byte("{"+data), &p); err != nil {
 		return fmt.Errorf("invalid Companion turn context: %w", err)
 	}
-	if p.Kind == "periodic" {
-		if len(start.Tools) != 0 {
-			return fmt.Errorf("unexpected dynamic tool for periodic work")
-		}
-	} else if len(start.Tools) != 1 || start.Tools[0].Type != "function" || start.Tools[0].Name != "telegram_react" {
-		return fmt.Errorf("expected the Telegram reaction tool: %+v", start.Tools)
+	if len(start.Tools) != 1 || start.Tools[0].Type != "function" || start.Tools[0].Name != "telegram_react" {
+		return fmt.Errorf("expected only the Telegram reaction tool: %+v", start.Tools)
 	}
 	if err := reply(m, fields{"turn": fields{"id": turn, "status": "inProgress"}}); err != nil {
 		return err
@@ -189,7 +185,6 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 
 type prompt struct {
 	Request string `json:"user_request"`
-	Kind    string `json:"kind"`
 }
 
 func scriptedAnswer(p prompt) (string, error) {
@@ -199,17 +194,7 @@ func scriptedAnswer(p prompt) (string, error) {
 		return "fixture conversation reply", nil
 	case "reaction-only-fixture":
 		return "NO_REPLY", nil
-	case "delegated-fixture":
-		return "fixture delegated result", nil
-	case "periodic-fixture":
-		if p.Kind != "periodic" {
-			return "", fmt.Errorf("expected periodic task, got %q", p.Kind)
-		}
-		return "fixture proactive result", nil
 	case "Remember that I prefer short summaries.":
-		if p.Kind != "conversation" {
-			return "", fmt.Errorf("expected note request as conversation, got %q", p.Kind)
-		}
 		return "fixture note request", nil
 	case "restart-fixture":
 		return "fixture resumed result", nil

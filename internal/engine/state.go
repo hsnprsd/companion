@@ -11,32 +11,14 @@ import (
 	"unicode/utf8"
 )
 
-const stateVersion = 2
+const stateVersion = 3
 
-const (
-	ready     = "ready"
-	running   = "running"
-	blocked   = "blocked"
-	complete  = "complete"
-	scheduled = "scheduled"
-	stopped   = "stopped"
-)
-
-type task struct {
-	ID         int64         `json:"id"`
-	Kind       string        `json:"kind"`
-	Text       string        `json:"text"`
-	Status     string        `json:"status"`
-	Revision   int64         `json:"revision"`
-	Every      time.Duration `json:"every,omitempty"`
-	NextRun    time.Time     `json:"next_run,omitempty"`
-	LastResult string        `json:"last_result,omitempty"`
-	Problem    string        `json:"problem,omitempty"`
-	MessageID  int64         `json:"message_id,omitempty"`
+type request struct {
+	Text      string `json:"text"`
+	MessageID int64  `json:"message_id,omitempty"`
 }
 
 type turn struct {
-	TaskID    int64  `json:"task_id"`
 	User      string `json:"user"`
 	Assistant string `json:"assistant,omitempty"`
 }
@@ -58,49 +40,33 @@ type incident struct {
 }
 
 type state struct {
-	Version    int             `json:"version"`
-	Offset     int64           `json:"offset"`
-	LastUpdate time.Time       `json:"last_update,omitempty"`
-	TaskSeq    int64           `json:"task_sequence"`
-	Tasks      map[int64]*task `json:"tasks"`
-	History    []turn          `json:"history"`
-	Outbox     []delivery      `json:"outbox"`
-	Incidents  []incident      `json:"delivery_incidents,omitempty"`
-
-	// Preserve old notes for manual recovery. Do not use them in prompts.
-	LegacyNotebook json.RawMessage `json:"notebook,omitempty"`
+	Version    int        `json:"version"`
+	Offset     int64      `json:"offset"`
+	LastUpdate time.Time  `json:"last_update,omitempty"`
+	Pending    []request  `json:"pending"`
+	History    []turn     `json:"history"`
+	Outbox     []delivery `json:"outbox"`
+	Incidents  []incident `json:"delivery_incidents,omitempty"`
 }
 
 func load(dir string) (state, error) {
-	s := state{
-		Version: stateVersion,
-		Tasks:   make(map[int64]*task),
-	}
+	var s state
 	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
+		return state{Version: stateVersion}, nil
 	}
 	if err != nil {
 		return state{}, err
 	}
-	s = state{}
 	if err := json.Unmarshal(data, &s); err != nil {
 		return state{}, err
 	}
 	if s.Version != stateVersion {
 		return state{}, fmt.Errorf("unsupported engine state version %d; expected %d", s.Version, stateVersion)
 	}
-	if s.Tasks == nil {
-		return state{}, errors.New("incomplete engine state")
-	}
-	for id, t := range s.Tasks {
-		if t == nil || t.ID != id || t.MessageID < 0 || (t.Every != 0 && t.MessageID != 0) {
-			return state{}, fmt.Errorf("invalid task %d in engine state", id)
-		}
-		switch t.Status {
-		case ready, running, blocked, complete, scheduled, stopped:
-		default:
-			return state{}, fmt.Errorf("invalid status for task %d in engine state", id)
+	for i, r := range s.Pending {
+		if strings.TrimSpace(r.Text) == "" || r.MessageID < 0 {
+			return state{}, fmt.Errorf("invalid pending request %d in engine state", i)
 		}
 	}
 	for i, d := range s.Outbox {
