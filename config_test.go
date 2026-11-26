@@ -33,6 +33,35 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadThinkingLevel(t *testing.T) {
+	const base = `{"model":"gpt-example","tg-bot-token":"123456:example_token_not_a_real_credential","tg-chat-id":123456`
+	for _, tc := range []struct {
+		name, field, want string
+		invalid           bool
+	}{
+		{name: "omitted", want: "medium"},
+		{name: "null", field: `,"thinking-level":null`},
+		{name: "configured", field: `,"thinking-level":"focused"`, want: "focused"},
+		{name: "empty", field: `,"thinking-level":""`, invalid: true},
+		{name: "extra space", field: `,"thinking-level":" high"`, invalid: true},
+		{name: "number", field: `,"thinking-level":3`, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setConfigFile(t, base+tc.field+`}`)
+			cfg, err := loadConfig()
+			if tc.invalid {
+				if err == nil {
+					t.Fatal("expected a configuration error")
+				}
+				return
+			}
+			if err != nil || cfg.ThinkingLevel != tc.want {
+				t.Fatalf("got thinking level %q and error %v, want %q and no error", cfg.ThinkingLevel, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestSuperviseCancelsOnLoopFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

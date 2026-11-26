@@ -33,14 +33,14 @@ The [Dockerfile](Dockerfile) builds the Go `1.27.4` app and installs Codex CLI `
 
 | Data | Standard location | Access and lifetime |
 | --- | --- | --- |
-| Companion configuration | `/etc/companion/companion.json` | Read-only app bind mount. Contains the model ID, Telegram bot token, and private chat ID. |
+| Companion configuration | `/etc/companion/companion.json` | Read-only app bind mount. Contains the model ID, optional thinking level, Telegram bot token, and private chat ID. |
 | App state | `/app/state` | App-only named volume. Contains `state.json` and `state.lock`. |
 | Durable workspace | `/workspace` | Runner-only named `workspace` volume. The agent can change files without approval. Files survive container replacement. |
 | Codex sign-in | `/home/node/.codex` | Runner-only external volume `companion-codex-auth`. The shell cannot read it. |
 
 ## 2. Startup and process lifecycle
 
-1. Load `model`, `tg-bot-token`, and `tg-chat-id` from the JSON config. The app limits the config to 4 KiB, validates the model and token formats, and requires a positive chat ID. It checks endpoint schemes and rejects credentials, query strings, and fragments in the URLs. See [Application settings](#application-settings) for the environment variables.
+1. Load `model`, optional `thinking-level`, `tg-bot-token`, and `tg-chat-id` from the JSON config. If `thinking-level` is absent, use `medium`. If it is `null`, let Codex choose the level. The app limits the config to 4 KiB, validates the model and token formats, and requires a positive chat ID. It checks endpoint schemes and rejects credentials, query strings, and fragments in the URLs. See [Application settings](#application-settings) for the environment variables.
 2. Create the state directory if necessary, acquire an exclusive `flock` on `state.lock`, and load the snapshot. A second app cannot open the same state directory while this lock is held. The app does not contact Codex until a step needs a model.
 3. Start three loops. Telegram `Poll` accepts updates. Engine `Work` runs one model step at a time. Engine `Deliver` sends queued messages. The engine mutex serializes state changes. The loops do not hold it during network calls. Wake channels and timers let the loops wait for state changes or deadlines.
 

@@ -43,6 +43,12 @@ Use Docker Engine with Compose v2 or later on a Linux host or Docker VM that per
 
    If the bot does not reply, check `docker compose logs -f app codex`. Check the chat ID and confirm that no other app is polling the same bot. Send a plain text message to check that Codex can answer as well.
 
+### Set the thinking level
+
+Companion uses `medium` if you omit `thinking-level`. To change it, set `"thinking-level": "high"` in `companion.json`. Use a level that your model supports. Higher levels can take longer. Set `thinking-level` to `null` to let Codex choose the level.
+
+The setting applies to conversations, one-time tasks, and recurring tasks. To apply a change to a running installation, run `docker compose up -d --no-deps --force-recreate app`.
+
 ## Protect your files and data
 
 - Companion can create, change, or delete files in `/workspace` without asking. It saves notes in `/workspace/notes`. Keep copies of files you cannot lose.

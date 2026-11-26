@@ -8,15 +8,17 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 )
 
 type config struct {
-	Model       string
-	Token       string
-	ChatID      int64
-	TelegramURL string
-	CodexURL    string
-	StateDir    string
+	Model         string
+	ThinkingLevel string
+	Token         string
+	ChatID        int64
+	TelegramURL   string
+	CodexURL      string
+	StateDir      string
 }
 
 var (
@@ -34,16 +36,24 @@ func loadConfig() (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("read Companion configuration: %w", err)
 	}
-	var file struct {
-		Model  string `json:"model"`
-		Token  string `json:"tg-bot-token"`
-		ChatID int64  `json:"tg-chat-id"`
-	}
+	file := struct {
+		Model         string  `json:"model"`
+		ThinkingLevel *string `json:"thinking-level"`
+		Token         string  `json:"tg-bot-token"`
+		ChatID        int64   `json:"tg-chat-id"`
+	}{ThinkingLevel: new("medium")} // An explicit JSON null clears this default.
 	if json.Unmarshal(data, &file) != nil {
 		return config{}, errors.New("invalid Companion configuration; see companion.example.json")
 	}
 	if !modelPattern.MatchString(file.Model) {
 		return config{}, errors.New("model must contain a valid model ID")
+	}
+	if file.ThinkingLevel != nil {
+		level := *file.ThinkingLevel
+		if level == "" || strings.TrimSpace(level) != level {
+			return config{}, errors.New("thinking-level must be a non-empty string with no leading or trailing whitespace, or null")
+		}
+		c.ThinkingLevel = level
 	}
 	if !botTokenPattern.MatchString(file.Token) {
 		return config{}, errors.New("invalid tg-bot-token")

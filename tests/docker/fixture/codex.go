@@ -70,7 +70,10 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if err != nil {
 		return err
 	}
-	if err := reply(m, fields{"data": []fields{{"model": model}}, "nextCursor": nil}); err != nil {
+	if err := reply(m, fields{"data": []fields{{
+		"model": model, "supportedReasoningEfforts": []fields{{"reasoningEffort": "low"}, {"reasoningEffort": "medium"}},
+		"defaultReasoningEffort": "low",
+	}}, "nextCursor": nil}); err != nil {
 		return err
 	}
 	var start struct {
@@ -116,6 +119,7 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	var run struct {
 		Thread string `json:"threadId"`
 		Model  string `json:"model"`
+		Effort string `json:"effort"`
 		Input  []struct {
 			Text string `json:"text"`
 		} `json:"input"`
@@ -124,8 +128,8 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if err != nil {
 		return err
 	}
-	if run.Thread != thread || run.Model != model || len(run.Input) != 1 {
-		return fmt.Errorf("wrong turn model, thread, or input: %s", m.Params)
+	if run.Thread != thread || run.Model != model || run.Effort != "medium" || len(run.Input) != 1 {
+		return fmt.Errorf("wrong turn model, thread, effort, or input: %s", m.Params)
 	}
 	var p prompt
 	_, data, _ := strings.Cut(run.Input[0].Text, "\n{")

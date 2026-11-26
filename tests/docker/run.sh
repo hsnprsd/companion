@@ -26,7 +26,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Use only these synthetic files. Do not resolve a production token or chat ID.
+# Use only these synthetic files. Omit thinking-level to test the default.
 printf '%s\n' '{"model":"fixture-model-v1","tg-bot-token":"123456789:docker_fixture_token_123456789","tg-chat-id":9876543210}' \
     > "$FIXTURE_DIR/companion.json"
 chmod 0444 "$FIXTURE_DIR/companion.json"

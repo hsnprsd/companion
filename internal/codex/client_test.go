@@ -243,6 +243,9 @@ func TestRunProtocol(t *testing.T) {
 	p.reply(list, params{"data": []params{{"id": "picker", "model": testModel}}, "nextCursor": nil})
 	p.thread("thread-1", false)
 	turn := p.turn("thread-1")
+	if _, ok := decode[params](t, turn.Params)["effort"]; ok {
+		t.Fatal("turn/start must omit effort when no thinking level is set")
+	}
 
 	p.serverRequest("escalate", "item/permissions/requestApproval", params{})
 	p.assertRejection(`"escalate"`, -32601)
@@ -278,6 +281,37 @@ func TestRunProtocol(t *testing.T) {
 	done["threadId"] = "thread-2"
 	p.event("turn/completed", done)
 	check(t, waitResult(t, results), outcome{text: "A second answer"})
+}
+
+func TestRunSendsConfiguredThinkingLevel(t *testing.T) {
+	client, conns := testRunner(t)
+	client.ThinkingLevel = "focused"
+	p, results, _ := launch(t, client, conns, false)
+	p.init()
+	p.reply(p.read("model/list"), params{"data": []params{{
+		"model": testModel, "defaultReasoningEffort": "medium",
+		"supportedReasoningEfforts": []params{{"reasoningEffort": "medium"}, {"reasoningEffort": "focused"}},
+	}}})
+	p.thread("thread", false)
+	turn := p.turn("thread")
+	check(t, decode[params](t, turn.Params)["effort"], "focused")
+	p.reply(turn, turnResult("turn", "completed", item("agentMessage", "final_answer", "Done.")))
+	check(t, waitResult(t, results), outcome{text: "Done."})
+}
+
+func TestRunRejectsUnsupportedThinkingLevel(t *testing.T) {
+	client, conns := testRunner(t)
+	client.ThinkingLevel = "high"
+	p, results, _ := launch(t, client, conns, false)
+	p.init()
+	p.reply(p.read("model/list"), params{"data": []params{
+		{"model": "other", "supportedReasoningEfforts": []params{{"reasoningEffort": "high"}}},
+		{"model": testModel, "supportedReasoningEfforts": []params{{"reasoningEffort": "medium"}}},
+	}})
+	const want = `thinking-level "high" is not supported by model "model-exact"`
+	if result := waitResult(t, results); result.err == nil || !strings.Contains(result.err.Error(), want) {
+		t.Fatalf("got %+v, want %q", result, want)
+	}
 }
 
 func TestRunRejectsMissingModel(t *testing.T) {

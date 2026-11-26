@@ -29,7 +29,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	app, err := engine.Open(cfg.StateDir, codex.Client{URL: cfg.CodexURL, Model: cfg.Model})
+	app, err := engine.Open(cfg.StateDir, codex.Client{URL: cfg.CodexURL, Model: cfg.Model, ThinkingLevel: cfg.ThinkingLevel})
 	if err != nil {
 		return fmt.Errorf("open task state: %w", err)
 	}
