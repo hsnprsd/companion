@@ -2,7 +2,7 @@
 
 Companion is a single-user service for one private Telegram chat. The Go app owns tasks, schedules, the notebook, and message delivery. Codex runs one model step at a time in a separate container. It uses its native tools in a durable workspace. The Go app does not mount that workspace or handle file operations.
 
-See [README.md](README.md) for setup, [GOAL.md](GOAL.md) for design goals, and [GLOSSARY.md](GLOSSARY.md) for terms.
+See [README.md](README.md) for setup and [GLOSSARY.md](GLOSSARY.md) for terms.
 
 ## 1. Components and deployment
 

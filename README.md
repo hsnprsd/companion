@@ -1,6 +1,6 @@
 # Companion
 
-Companion accepts work and sends updates in one private Telegram chat. It keeps tasks, the notebook, and workspace files across container restarts. See [ARCHITECTURE.md](ARCHITECTURE.md) for the system design, [GOAL.md](GOAL.md) for the project goal, and [GLOSSARY.md](GLOSSARY.md) for definitions of Companion terms.
+Companion accepts work and sends updates in one private Telegram chat. It keeps tasks, the notebook, and workspace files across container restarts. See [ARCHITECTURE.md](ARCHITECTURE.md) for the system design and [GLOSSARY.md](GLOSSARY.md) for definitions of Companion terms.
 
 ## Set up
 
