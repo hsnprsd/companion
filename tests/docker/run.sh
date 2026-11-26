@@ -80,30 +80,15 @@ wait_message 'fixture proactive result' 2
 send '/stop 3'
 wait_message 'Task 3: stopped.'
 
-printf '%s\n' 'Check notebook inspection, recall, correction and deletion.'
-send '/note color amber'
-wait_message 'Saved note "color".'
-send 'recall-original'
-wait_message 'fixture recall-original'
-send '/note color teal'
-send '/notes'
-wait_message 'color: teal'
-send 'recall-edited'
-wait_message 'fixture recall-edited'
-send '/forget color'
-wait_message 'Removed note "color".'
-send '/notes'
-wait_message 'The notebook is empty.'
-send 'recall-deleted'
-wait_message 'fixture recall-deleted'
-send '/note survivor durable fixture value'
-wait_message 'Saved note "survivor".'
+printf '%s\n' 'Check that a note request reaches the runner as conversation.'
+send 'Remember that I prefer short summaries.'
+wait_message 'fixture note request'
 
 printf '%s\n' 'Check that the removed commands do not create work.'
-for command in '/grant manual' '/revoke manual' '/access' '/approve 1' '/deny 1'; do
+for command in '/grant manual' '/revoke manual' '/access' '/approve 1' '/deny 1' '/note color amber' '/notes' '/forget color'; do
     send "$command"
 done
-wait_message 'Unknown command. Use /help to see the commands.' 5
+wait_message 'Unknown command. Use /help to see the commands.' 8
 
 printf '%s\n' 'Restart with an active turn.'
 send '/work restart-fixture'
@@ -117,9 +102,9 @@ compose start app
 fx wait turns 'restart-fixture' 2
 wait_message 'fixture resumed result'
 fx replay "$delegate_id" "$chat" private '/work delegated-fixture'
-send '/notes'
+send '/help'
 acked
-wait_message 'survivor: durable fixture value'
+wait_message 'Send a message to talk or manage notes.'
 count_is turns 'delegated-fixture' 1
 count_is messages 'fixture resumed result' 1
 

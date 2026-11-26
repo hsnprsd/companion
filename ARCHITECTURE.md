@@ -1,6 +1,6 @@
 # Companion architecture
 
-Companion is a single-user service for one private Telegram chat. The Go app owns tasks, schedules, the notebook, and message delivery. Codex runs one model step at a time in a separate container. It uses its native tools in a durable workspace. The Go app does not mount that workspace or handle file operations.
+Companion is a single-user service for one private Telegram chat. The Go app owns tasks, schedules, and message delivery. Codex runs one model step at a time in a separate container. It uses its native tools in a durable workspace. The Go app does not mount that workspace or handle file operations.
 
 See [README.md](README.md) for setup and [GLOSSARY.md](GLOSSARY.md) for terms.
 
@@ -55,7 +55,6 @@ The app uses one versioned JSON snapshot, not a database or a Codex session. [`s
 | Telegram cursor | Next update ID and time of the last saved update. |
 | Tasks | Task ID, kind, instructions, status, revision, schedule, last result, any problem, and the Telegram message ID when available. |
 | Conversation history | User text and the saved assistant reply for each conversation task. |
-| Notebook | User-managed text entries indexed by key. |
 | Outbox and incidents | Queued text or reactions, confirmed text byte position, send-in-progress marker, retry time, and records of failed or uncertain deliveries. |
 
 For each commit, the engine changes state under its mutex. It writes the snapshot to a temporary file in the state directory, syncs and closes the file, renames it to `state.json`, and syncs the directory. Only then does it publish the new Telegram cursor. A save error stops the engine and cancels the active step. The app does not acknowledge an update on the basis of a failed save.
@@ -76,7 +75,6 @@ Plain text creates a conversation task. The app handles slash commands locally:
 | `/work TEXT`, `/every DURATION TEXT` | Create a one-time or recurring task. |
 | `/tasks`, `/task ID` | Inspect task state. `/tasks` omits completed conversation tasks. |
 | `/change ID TEXT`, `/stop ID`, `/retry ID` | Replace task instructions, stop a task, or make a blocked task ready. |
-| `/note KEY TEXT`, `/forget KEY`, `/notes` | Add, replace, remove, or list notebook entries. |
 
 The Telegram client uses a 40-second HTTP timeout and does not follow redirects. It hides transport error details that could contain the bot token. Polling retries transient errors and HTTP 409 with delays from 1 to 30 seconds, unless Telegram supplies a longer delay. Other permanent poll errors stop the service.
 
@@ -97,7 +95,9 @@ Recurring work uses Go duration syntax and a minimum interval of one second. The
 
 Each step has a five-minute timeout. The engine records `running` before it calls the runner. `/change`, `/stop`, and a successful `/retry` increment the task revision. When an update changes the active revision, the engine cancels the step and discards its result. It does not roll back native tool effects.
 
-Each prompt includes the current request, task kind, the notebook, the last task result if present, and up to 20 earlier conversation records. The notebook is separate from conversation history. Only the user can change notebook entries through Telegram commands. Removing a note does not remove previous conversation text.
+Each prompt includes the current request, task kind, the last task result if present, and up to 20 earlier conversation records.
+
+Codex receives developer instructions to consult and maintain notes in `/workspace/notes` on its own initiative. It uses one Markdown file per topic with descriptive names and headings. It also reads, saves, changes, or removes notes when asked in ordinary conversation. The runner reads and writes these files with its native tools. The app does not inject the files into prompts. Removing a note does not erase conversation history. Older snapshots can contain a retired `notebook` field that the app preserves for manual recovery but does not send to Codex.
 
 ## 6. Codex step and protocol boundary
 
@@ -140,7 +140,7 @@ The app does not provide exactly-once execution for model turns, native tools, o
 ## 10. Operating limits and verification
 
 - Use one app instance, one private chat, one Telegram poller, and one worker. There is no database server or state replication.
-- Each commit rewrites the snapshot. The app does not remove old tasks, history, or delivery incidents. It sends up to 20 conversation records per prompt and sends the full notebook.
+- Each commit rewrites the snapshot. The app does not remove old tasks, history, or delivery incidents. It sends up to 20 conversation records per prompt.
 - Stop both services before backing up state and workspace. Protect both backups as private data. `docker compose down` keeps named volumes. `docker compose down -v` removes app state and workspace but not the external sign-in volume.
 
 Run `go test -race ./...` for tests of configuration, Telegram HTTP behavior, scheduling, state, delivery, and the Codex protocol. Run [`tests/docker/run.sh`](tests/docker/run.sh) for the app image with fake Telegram and Codex peers. Run [`tests/docker/runner.sh`](tests/docker/runner.sh) for native file operations, workspace persistence, and shell boundary checks with real Codex and a local model fixture. Both Docker tests use disposable volumes and do not contact Telegram or OpenAI.

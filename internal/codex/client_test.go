@@ -180,6 +180,7 @@ func (p *peer) thread(id string, canReact bool) {
 	check(p.t, cfg["features"], params{"standalone_web_search": true})
 	check(p.t, cfg["web_search"], "live")
 	check(p.t, cfg["permissions"], nil)
+	check(p.t, args["developerInstructions"], workspaceNotesInstructions)
 	if canReact {
 		want, err := json.Marshal([]params{reactionTool()})
 		if err != nil {

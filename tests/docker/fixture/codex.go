@@ -74,13 +74,14 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		return err
 	}
 	var start struct {
-		Model       string `json:"model"`
-		Provider    string `json:"modelProvider"`
-		Permissions string `json:"permissions"`
-		CWD         string `json:"cwd"`
-		Approval    string `json:"approvalPolicy"`
-		Ephemeral   bool   `json:"ephemeral"`
-		Tools       []struct {
+		Model        string `json:"model"`
+		Provider     string `json:"modelProvider"`
+		Permissions  string `json:"permissions"`
+		CWD          string `json:"cwd"`
+		Approval     string `json:"approvalPolicy"`
+		Ephemeral    bool   `json:"ephemeral"`
+		Instructions string `json:"developerInstructions"`
+		Tools        []struct {
 			Type string `json:"type"`
 			Name string `json:"name"`
 		} `json:"dynamicTools"`
@@ -91,6 +92,11 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	}
 	if start.Model != model || start.Provider != "openai" || start.Permissions != "companion-workspace" || start.CWD != "/workspace" || start.Approval != "never" || !start.Ephemeral {
 		return fmt.Errorf("wrong model or thread restrictions: %s", m.Params)
+	}
+	for _, want := range []string{"/workspace/notes", "without waiting for a request", "one Markdown file per topic", "Handle note requests in ordinary conversation."} {
+		if !strings.Contains(start.Instructions, want) {
+			return fmt.Errorf("workspace note instructions missing %q", want)
+		}
 	}
 	const thread = "fixture-thread"
 	const turn = "fixture-turn"
@@ -178,9 +184,8 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 }
 
 type prompt struct {
-	Request string            `json:"user_request"`
-	Kind    string            `json:"kind"`
-	Notes   map[string]string `json:"notebook"`
+	Request string `json:"user_request"`
+	Kind    string `json:"kind"`
 }
 
 func scriptedAnswer(p prompt) (string, error) {
@@ -197,16 +202,12 @@ func scriptedAnswer(p prompt) (string, error) {
 			return "", fmt.Errorf("expected periodic task, got %q", p.Kind)
 		}
 		return "fixture proactive result", nil
-	case "recall-original", "recall-edited", "recall-deleted":
-		want := map[string]string{"recall-original": "amber", "recall-edited": "teal", "recall-deleted": ""}[name]
-		if got, exists := p.Notes["color"]; got != want || exists != (want != "") {
-			return "", fmt.Errorf("wrong durable notebook context for %s: %+v", name, p.Notes)
+	case "Remember that I prefer short summaries.":
+		if p.Kind != "conversation" {
+			return "", fmt.Errorf("expected note request as conversation, got %q", p.Kind)
 		}
-		return "fixture " + name, nil
+		return "fixture note request", nil
 	case "restart-fixture":
-		if p.Notes["survivor"] != "durable fixture value" {
-			return "", fmt.Errorf("notebook entry missing after restart")
-		}
 		return "fixture resumed result", nil
 	default:
 		return "", fmt.Errorf("unexpected user request: %q", name)

@@ -1,6 +1,6 @@
 # Companion
 
-Use Companion in a private Telegram chat to ask questions, assign tasks, and schedule recurring checks. Companion can send results without a new message from you. It keeps your tasks, workspace files, and notebook entries when you replace the containers.
+Use Companion in a private Telegram chat to ask questions, assign tasks, and schedule recurring checks. Companion can send results without a new message from you. It keeps your tasks, workspace files, and saved notes when you replace the containers.
 
 ## Use Companion in Telegram
 
@@ -13,14 +13,11 @@ Use Companion in a private Telegram chat to ask questions, assign tasks, and sch
 | Change the instructions and run the task again | `/change ID New instructions` |
 | Stop a task or schedule | `/stop ID` |
 | Retry a blocked task | `/retry ID` |
-| Save or replace a note | `/note format Use a short summary first` |
-| See your notes | `/notes` |
-| Remove a note | `/forget format` |
 | See the commands | `/help` |
 
 Replace `ID` with the number Companion gives the task. A recurring task first runs after one full interval. Companion can skip the message if there is nothing to report. Before you retry a task, check whether the earlier attempt changed any files. Stopping a task does not undo its changes.
 
-Use the same key, such as `format`, to replace or remove a notebook entry. Removing an entry does not delete chat history.
+Companion can save useful details and refer to them later without a request from you. To ask it to save a note, send `Remember that I prefer a short summary first.` To see saved notes, ask `What preferences did you save for me?` To remove a note, ask `Forget my preference for a short summary.` Removing a note does not delete chat history.
 
 Companion can react to a chat message or a one-time work request, but not to an older message or a recurring task. Try `React to this message with 👍 and do not send a text reply.`
 
@@ -48,9 +45,9 @@ Use Docker Engine with Compose v2 or later on a Linux host or Docker VM that per
 
 ## Protect your files and data
 
-- Companion can create, change, or delete files in `/workspace` without asking. Keep copies of files you cannot lose.
+- Companion can create, change, or delete files in `/workspace` without asking. It saves notes in `/workspace/notes`. Keep copies of files you cannot lose.
 - Companion can make network requests. Keep secrets out of the workspace. Do not mount host directories in it. Companion does not mount them by default.
-- Back up both Docker volumes: `workspace` holds files; `state` holds tasks, chat history, notebook entries, and pending Telegram replies. Stop both services before you back up the volumes. Keep the backups private.
+- Back up both Docker volumes: `workspace` holds files and saved notes; `state` holds tasks, chat history, and pending Telegram replies. Stop both services before you back up the volumes. Keep the backups private.
 
 ## Stop, start, or update Companion
 
@@ -76,6 +73,10 @@ docker compose up --build -d
 ```
 
 If you use a different project name, use that project's state volume. Do not use `docker compose down -v`: it also deletes the workspace.
+
+### Recover notes saved with `/note`
+
+Use plain text instead of `/note`, `/notes`, and `/forget`. If you have version 2 state with old notebook entries, Companion keeps those entries in the `notebook` field of `state.json` but does not use them. To keep an old note active, find it in a private copy of the state file and ask Companion to remember it again. Do not send secrets.
 
 ## Technical reference
 

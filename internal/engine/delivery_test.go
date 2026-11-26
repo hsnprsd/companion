@@ -87,7 +87,7 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 			dir := t.TempDir()
 			e := openEngine(t, dir, echoRunner)
 			acceptUpdate(t, e, 1, "/work task")
-			acceptUpdate(t, e, 2, "/notes")
+			acceptUpdate(t, e, 2, "/task 99")
 			original, _ := nextSend(t, e)
 			if tc.restart {
 				closeEngine(t, e)
@@ -100,7 +100,7 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 				t.Fatalf("incorrect uncertainty handling; notice=%q, incidents=%+v", notice, s.Incidents)
 			}
 			recordSend(t, e, notice, sendError{uncertain: true})
-			if next, _ := nextSend(t, e); next != "The notebook is empty." {
+			if next, _ := nextSend(t, e); next != "Task 99 was not found." {
 				t.Fatalf("unknown result for the notice blocked the queue or repeated the original: %q", next)
 			}
 		})
@@ -110,7 +110,7 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 func TestPermanentRejectionDoesNotBlockOutbox(t *testing.T) {
 	e := openEngine(t, t.TempDir(), echoRunner)
 	acceptUpdate(t, e, 1, "/help")
-	acceptUpdate(t, e, 2, "/notes")
+	acceptUpdate(t, e, 2, "/tasks")
 	part, _ := nextSend(t, e)
 	recordSend(t, e, part, sendError{permanent: true})
 	notice, _ := nextSend(t, e)
@@ -118,7 +118,7 @@ func TestPermanentRejectionDoesNotBlockOutbox(t *testing.T) {
 		t.Fatalf("expected a permanent rejection notice, got %q", notice)
 	}
 	recordSend(t, e, notice, sendError{permanent: true})
-	if next, _ := nextSend(t, e); next != "The notebook is empty." {
+	if next, _ := nextSend(t, e); next != "No tasks." {
 		t.Fatalf("permanent rejection blocked later messages: %q", next)
 	}
 }

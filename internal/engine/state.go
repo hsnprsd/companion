@@ -58,22 +58,23 @@ type incident struct {
 }
 
 type state struct {
-	Version    int               `json:"version"`
-	Offset     int64             `json:"offset"`
-	LastUpdate time.Time         `json:"last_update,omitempty"`
-	TaskSeq    int64             `json:"task_sequence"`
-	Tasks      map[int64]*task   `json:"tasks"`
-	History    []turn            `json:"history"`
-	Notes      map[string]string `json:"notebook"`
-	Outbox     []delivery        `json:"outbox"`
-	Incidents  []incident        `json:"delivery_incidents,omitempty"`
+	Version    int             `json:"version"`
+	Offset     int64           `json:"offset"`
+	LastUpdate time.Time       `json:"last_update,omitempty"`
+	TaskSeq    int64           `json:"task_sequence"`
+	Tasks      map[int64]*task `json:"tasks"`
+	History    []turn          `json:"history"`
+	Outbox     []delivery      `json:"outbox"`
+	Incidents  []incident      `json:"delivery_incidents,omitempty"`
+
+	// Preserve old notes for manual recovery. Do not use them in prompts.
+	LegacyNotebook json.RawMessage `json:"notebook,omitempty"`
 }
 
 func load(dir string) (state, error) {
 	s := state{
 		Version: stateVersion,
 		Tasks:   make(map[int64]*task),
-		Notes:   make(map[string]string),
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -89,7 +90,7 @@ func load(dir string) (state, error) {
 	if s.Version != stateVersion {
 		return state{}, fmt.Errorf("unsupported engine state version %d; expected %d", s.Version, stateVersion)
 	}
-	if s.Tasks == nil || s.Notes == nil {
+	if s.Tasks == nil {
 		return state{}, errors.New("incomplete engine state")
 	}
 	for id, t := range s.Tasks {

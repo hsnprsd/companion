@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -197,56 +196,63 @@ func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
 	}
 }
 
-func TestNotebookHistoryAndSchedule(t *testing.T) {
-	now := time.Now().Truncate(time.Second)
+func TestNoteRequestsUseConversation(t *testing.T) {
+	const remember = "Please remember that I prefer short summaries."
+	const forget = "Forget my preference for short summaries."
 	var prompts []string
 	r := runnerFunc(func(_ context.Context, prompt string) (string, error) {
 		prompts = append(prompts, prompt)
-		switch len(prompts) {
-		case 1:
-			return "Earlier chat mentions old-value.", nil
-		case 2:
-			return "Current note checked.", nil
-		case 3:
-			return "Notebook cleared.", nil
-		case 4:
-			return "Periodic finding.", nil
-		default:
-			return "NO_UPDATE", nil
-		}
+		return "fixture reply", nil
 	})
 	dir := t.TempDir()
+	const legacy = `{"colour":"legacy-only-value"}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"version":2,"tasks":{},"notebook":`+legacy+`}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	e := openEngine(t, dir, r)
-	acceptUpdate(t, e, 1, "/note colour old-value")
-	acceptUpdate(t, e, 2, "Old chat says old-value.")
+	acceptUpdate(t, e, 1, remember)
 	runJob(t, e)
 	closeEngine(t, e)
 	e = openEngine(t, dir, r)
-	e.now = func() time.Time { return now }
-	acceptUpdate(t, e, 3, "/note colour new-value")
-	acceptUpdate(t, e, 4, "Is it updated?")
+	acceptUpdate(t, e, 2, forget)
 	runJob(t, e)
-	acceptUpdate(t, e, 5, "/forget colour")
-	acceptUpdate(t, e, 6, "/notes")
-	acceptUpdate(t, e, 7, "Is the notebook clear?")
-	runJob(t, e)
-	for i, want := range []map[string]string{{"colour": "old-value"}, {"colour": "new-value"}, nil} {
+	for i, want := range []string{remember, forget} {
 		var input struct {
-			Notes   map[string]string `json:"notebook"`
-			History []turn            `json:"conversation_history"`
+			Kind    string          `json:"kind"`
+			Request string          `json:"user_request"`
+			History []turn          `json:"conversation_history"`
+			Legacy  json.RawMessage `json:"notebook"`
 		}
 		decodePrompt(t, prompts[i], &input)
-		if !reflect.DeepEqual(input.Notes, want) {
-			t.Fatalf("step %d notebook = %#v, want %#v", i, input.Notes, want)
+		if input.Kind != "conversation" || input.Request != want || len(input.Legacy) != 0 {
+			t.Fatalf("step %d received the wrong note request context: %+v", i, input)
 		}
-		if i > 0 && (len(input.History) != i || !strings.Contains(input.History[0].Assistant, "old-value")) {
-			t.Fatalf("step %d did not preserve conversation history: %+v", i, input.History)
+		if len(input.History) != i || i == 1 && (input.History[0].User != remember || input.History[0].Assistant != "fixture reply") {
+			t.Fatalf("step %d received the wrong conversation history: %+v", i, input.History)
 		}
 	}
-	acceptUpdate(t, e, 8, "/every 500ms too fast")
-	acceptUpdate(t, e, 9, "/every 2s check")
-	if s := stored(t, e); len(s.Tasks) != 4 || !strings.Contains(outboxText(s), "notebook is empty") || !s.Tasks[4].NextRun.Equal(now.Add(2*time.Second)) || jobFor(t, e) != nil {
-		t.Fatalf("unexpected notebook or schedule state: %+v", s)
+	if s := stored(t, e); string(s.LegacyNotebook) != legacy {
+		t.Fatal("saving new state did not preserve the retired notebook")
+	}
+}
+
+func TestRecurringWorkKeepsCadenceAfterRestart(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	runs := 0
+	r := runnerFunc(func(_ context.Context, _ string) (string, error) {
+		runs++
+		if runs == 1 {
+			return "Periodic finding.", nil
+		}
+		return "NO_UPDATE", nil
+	})
+	dir := t.TempDir()
+	e := openEngine(t, dir, r)
+	e.now = func() time.Time { return now }
+	acceptUpdate(t, e, 1, "/every 500ms too fast")
+	acceptUpdate(t, e, 2, "/every 2s check")
+	if s := stored(t, e); len(s.Tasks) != 1 || !s.Tasks[1].NextRun.Equal(now.Add(2*time.Second)) || jobFor(t, e) != nil {
+		t.Fatalf("unexpected schedule state: %+v", s)
 	}
 	closeEngine(t, e)
 	e = openEngine(t, dir, r)
@@ -254,16 +260,16 @@ func TestNotebookHistoryAndSchedule(t *testing.T) {
 	e.now = func() time.Time { return now }
 	runJob(t, e)
 	s := stored(t, e)
-	if s.Tasks[4].Status != scheduled || !s.Tasks[4].NextRun.Equal(now.Add(time.Second)) || !strings.Contains(outboxText(s), "Periodic finding.") {
-		t.Fatalf("missed ticks were not skipped or feedback was not saved: %+v", s.Tasks[4])
+	if s.Tasks[1].Status != scheduled || !s.Tasks[1].NextRun.Equal(now.Add(time.Second)) || !strings.Contains(outboxText(s), "Periodic finding.") {
+		t.Fatalf("missed ticks were not skipped or feedback was not saved: %+v", s.Tasks[1])
 	}
 	now = now.Add(time.Second)
 	before := len(s.Outbox)
 	runJob(t, e)
-	if s := stored(t, e); len(s.Outbox) != before || s.Tasks[4].LastResult != "Periodic finding." {
+	if s := stored(t, e); len(s.Outbox) != before || s.Tasks[1].LastResult != "Periodic finding." {
 		t.Fatal("NO_UPDATE sent a reply or erased the previous finding")
 	}
-	acceptUpdate(t, e, 10, "/stop 4")
+	acceptUpdate(t, e, 3, "/stop 1")
 	now = now.Add(time.Minute)
 	if jobFor(t, e) != nil {
 		t.Fatal("stopped periodic task is still due")

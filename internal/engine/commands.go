@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,7 +9,7 @@ import (
 	"unicode"
 )
 
-const helpText = `Send a message to talk. Use these commands to delegate work or inspect state:
+const helpText = `Send a message to talk or manage notes. Use these commands to delegate work or inspect state:
 /help — Show commands.
 /work TEXT — Start one task.
 /every DURATION TEXT — Run work each interval (for example, /every 24h Check the workspace). The first run waits one interval. Minimum: 1s.
@@ -18,10 +17,7 @@ const helpText = `Send a message to talk. Use these commands to delegate work or
 /task ID — Show a task and its latest action, if any.
 /change ID TEXT — Replace a task's instructions and start a new run.
 /stop ID — Stop a task or schedule.
-/retry ID — Resume a blocked task when it is safe to retry.
-/notes — Show the notebook.
-/note KEY TEXT — Add or replace a note.
-/forget KEY — Delete a note.`
+/retry ID — Resume a blocked task when it is safe to retry.`
 
 func word(text string) (head, rest string) {
 	text = strings.TrimLeftFunc(text, unicode.IsSpace)
@@ -45,18 +41,15 @@ func (e *Engine) acceptText(s *state, messageID int64, text string) {
 	}
 	usage := func(args string) { s.say("Use " + cmd + args + ".") }
 	switch cmd {
-	case "/help", "/tasks", "/notes":
+	case "/help", "/tasks":
 		if args != "" {
 			usage("")
 			return
 		}
-		switch cmd {
-		case "/help":
+		if cmd == "/help" {
 			s.say(helpText)
-		case "/tasks":
+		} else {
 			s.listTasks()
-		case "/notes":
-			s.showNotes()
 		}
 	case "/work":
 		if args == "" {
@@ -87,23 +80,6 @@ func (e *Engine) acceptText(s *state, messageID int64, text string) {
 			return
 		}
 		s.taskCommand(cmd, id, rest, messageID)
-	case "/note", "/forget":
-		key, value := word(args)
-		if key == "" || (cmd == "/note") != (value != "") {
-			if cmd == "/note" {
-				usage(" KEY TEXT")
-			} else {
-				usage(" KEY")
-			}
-			return
-		}
-		if cmd == "/note" {
-			s.Notes[key] = value
-			s.say(fmt.Sprintf("Saved note %q.", key))
-		} else {
-			delete(s.Notes, key)
-			s.say(fmt.Sprintf("Removed note %q.", key))
-		}
 	default:
 		s.say("Unknown command. Use /help to see the commands.")
 	}
@@ -185,18 +161,6 @@ func (s *state) showTask(t *task) {
 		fmt.Fprintf(&text, "\nLast result: %s", t.LastResult)
 	}
 	s.say(text.String())
-}
-
-func (s *state) showNotes() {
-	if len(s.Notes) == 0 {
-		s.say("The notebook is empty.")
-		return
-	}
-	var text strings.Builder
-	for _, key := range slices.Sorted(maps.Keys(s.Notes)) {
-		fmt.Fprintf(&text, "%s: %s\n", key, s.Notes[key])
-	}
-	s.say(strings.TrimSuffix(text.String(), "\n"))
 }
 
 func displayTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
