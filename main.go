@@ -7,15 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"companion/internal/codex"
 	"companion/internal/engine"
 	"companion/internal/telegram"
-	"companion/internal/workspace"
 )
 
 func main() {
@@ -32,15 +29,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := prepareDirectories(cfg); err != nil {
-		return err
-	}
-	files, err := workspace.Open(cfg.Workspace, cfg.ExternalDir)
-	if err != nil {
-		return err
-	}
-	defer files.Close()
-	app, err := engine.Open(cfg.StateDir, codex.Client{URL: cfg.CodexURL, Model: cfg.Model}, files)
+	app, err := engine.Open(cfg.StateDir, codex.Client{URL: cfg.CodexURL, Model: cfg.Model})
 	if err != nil {
 		return fmt.Errorf("open task state: %w", err)
 	}
@@ -88,58 +77,4 @@ func supervise(parent context.Context, loops ...func(context.Context) error) err
 		}
 	}
 	return first
-}
-
-func prepareDirectories(cfg config) error {
-	for _, dir := range []string{cfg.StateDir, cfg.Workspace} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return err
-		}
-	}
-	workspace, err := resolved(cfg.Workspace)
-	if err != nil {
-		return err
-	}
-	state, err := resolved(cfg.StateDir)
-	if err != nil {
-		return err
-	}
-	if containsDir(workspace, state) || containsDir(state, workspace) {
-		return errors.New("workspace and service state must be separate directories")
-	}
-	readable := []string{workspace}
-	if cfg.ExternalDir != "" {
-		external, err := resolved(cfg.ExternalDir)
-		if err != nil {
-			return err
-		}
-		if containsDir(external, state) || containsDir(state, external) ||
-			containsDir(external, workspace) || containsDir(workspace, external) {
-			return errors.New("external mounts must be separate from the workspace and service state")
-		}
-		readable = append(readable, external)
-	}
-	file, err := resolved(configPath())
-	if err != nil {
-		return err
-	}
-	for _, dir := range readable {
-		if containsDir(dir, file) {
-			return errors.New("private configuration must not be inside readable file roots")
-		}
-	}
-	return nil
-}
-
-func resolved(name string) (string, error) {
-	absolute, err := filepath.Abs(name)
-	if err != nil {
-		return "", err
-	}
-	return filepath.EvalSymlinks(absolute)
-}
-
-func containsDir(dir, name string) bool {
-	rel, err := filepath.Rel(dir, name)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

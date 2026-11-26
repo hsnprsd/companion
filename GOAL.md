@@ -8,9 +8,7 @@ Companion should support different kinds of work, from a short request to an ong
 
 ## Access and approval
 
-Start with limited access, as you would for a new colleague. Give Companion access to more systems and permission to perform more actions as it earns your trust.
-
-Keep access and approval separate. Access to a system does not mean Companion can make every change in it. When an action requires approval, Companion must tell you what it wants to do and wait for your explicit approval. Companion must not grant itself more access or remove an approval requirement.
+Give Companion control of its own workspace. Do not require approval for work there. Keep the host, service credentials, and app state outside the agent's reach. Add access to other systems only when there is a specific need. If a future integration needs approval, enforce that approval at the integration boundary.
 
 ## Memory
 
@@ -23,13 +21,13 @@ Give Companion two kinds of memory:
 
 - Write Companion in Go so you can read and maintain it.
 - Run it in a Docker container on your machine for now.
-- Give it an isolated workspace that it owns. Give it access to files or systems outside that workspace only when needed and explicitly granted.
+- Give the runner an isolated, durable workspace that the agent owns. Do not mount host files for the agent by default.
 
 ## Agent runtime options
 
-Use the existing ChatGPT subscription. Do not require a separately billed OpenAI API key for the first release. Use Codex app-server in a separate runner container. Read the exact model ID from the local `companion.json` file. Use [companion.example.json](companion.example.json) as a template. Let Codex use its normal tools, including shell commands in runner scratch space and live OpenAI web search.
+Use the existing ChatGPT subscription. Do not require a separately billed OpenAI API key for the first release. Use Codex app-server in a separate runner container. Read the exact model ID from the local `companion.json` file. Use [companion.example.json](companion.example.json) as a template. Let Codex use its native tools, including shell commands in the workspace and live OpenAI web search.
 
-Let the Go application own task state, the notebook, approvals, and Telegram messages. Do not make a runner session the only record of delegated work. Keep the durable workspace and all service files out of the runner container. Apply grants and approvals in the Go service before file actions in the durable workspace or on an external mount.
+Let the Go app own task state, the notebook, and Telegram messages. Do not make a runner session the only record of delegated work. Mount the durable workspace only in the runner. Keep service files out of the agent's shell.
 
 | Option | Benefit | Cost |
 | --- | --- | --- |
@@ -39,16 +37,16 @@ Let the Go application own task state, the notebook, approvals, and Telegram mes
 
 ## Restart behavior
 
-On a planned shutdown, stop starting new work. Save task progress and pending approvals before exit. After restart, recover the notebook and tasks. Keep pending approvals valid for the same proposed action. If the outcome of an external action is unknown, check its result before trying it again. If you cannot check the result, tell the user instead of repeating the action.
+On a planned shutdown, stop starting new work. After restart, recover the notebook and tasks. Keep workspace files across runner replacements. A stopped turn can leave file changes. Inspect the workspace before you repeat interrupted work.
 
 ## First milestone
 
 Build the first usable version of Companion. From one private Telegram chat, talk with it, delegate a task or an ongoing responsibility, and get updates and feedback without asking each time.
 
-Companion must work in its own isolated workspace, keep task state and a durable notebook, and enforce the access you grant and the approvals you require. A container restart must preserve the notebook, work in progress, and pending approvals.
+Companion must work in its own isolated workspace and keep a durable record of tasks and notes. A container restart must preserve the notebook, tasks, and files.
 
 Verify these capabilities together in Docker. A single sample task does not define the milestone. Use the working version to decide which capabilities and integrations to add next.
 
 ## First release access
 
-Use the runner's scratch space for shell work. Use the Go file tools for the durable workspace and for read-only external mounts. Require explicit approval for each durable workspace write and an explicit grant to read from each external mount. Use `/notes`, `/note`, and `/forget` to manage the notebook in Telegram.
+Use native tools in the runner's workspace. Do not connect host directories, sockets, or other services to the agent by default. Use `/notes`, `/note`, and `/forget` to manage the notebook in Telegram.

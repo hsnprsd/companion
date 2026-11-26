@@ -29,9 +29,7 @@ trap 'exit 143' TERM
 # Use only these synthetic files. Do not resolve a production token or chat ID.
 printf '%s\n' '{"model":"fixture-model-v1","tg-bot-token":"123456789:docker_fixture_token_123456789","tg-chat-id":9876543210}' \
     > "$FIXTURE_DIR/companion.json"
-mkdir -p "$FIXTURE_DIR/external/manual"
-printf '%s\n' 'fixture external data' > "$FIXTURE_DIR/external/manual/guide.txt"
-chmod 0444 "$FIXTURE_DIR/companion.json" "$FIXTURE_DIR/external/manual/guide.txt"
+chmod 0444 "$FIXTURE_DIR/companion.json"
 compose up --build --detach --wait --wait-timeout 30
 
 fx() { compose exec -T fixture /usr/local/bin/fixture "$@"; }
@@ -56,6 +54,7 @@ acked() { fx offset "$next"; }
 
 printf '%s\n' 'Check filtering, deduplication, conversation and delegated work.'
 test "$(app id -u)" = 1000
+app test ! -e /workspace
 send_chat 9876543211 private 'wrong-chat-fixture'
 send_chat "$chat" supergroup 'wrong-type-fixture'
 send 'hello-fixture'
@@ -97,63 +96,28 @@ wait_message 'fixture recall-deleted'
 send '/note survivor durable fixture value'
 wait_message 'Saved note "survivor".'
 
-printf '%s\n' 'Check the external read-only mount and grant boundaries.'
-send 'read-alias-blocked'
-wait_message 'fixture read-alias-blocked'
-send '/grant missing'
-wait_message 'Access "missing" is not available.'
-send '/grant manual'
-wait_message 'Granted read access to @manual/.'
-send 'read-alias-granted'
-wait_message 'fixture read-alias-granted'
-send 'write-alias-blocked'
-wait_message 'fixture write-alias-blocked'
-send '/revoke manual'
-wait_message 'Revoked access to @manual/.'
-send 'read-alias-revoked'
-wait_message 'fixture read-alias-revoked'
+printf '%s\n' 'Check that the removed commands do not create work.'
+for command in '/grant manual' '/revoke manual' '/access' '/approve 1' '/deny 1'; do
+    send "$command"
+done
+wait_message 'Unknown command. Use /help to see the commands.' 5
 
-printf '%s\n' 'Check exact write approval; keep one action pending.'
-send '/work write-b'
-wait_message 'To approve this action only, send /approve 1'
-wait_message '{"tool":"write_file","path":"write-b.txt","content":"exact fixture write-b\n"}'
-send '/work write-a'
-wait_message 'To approve this action only, send /approve 2'
-wait_message '{"tool":"write_file","path":"write-a.txt","content":"exact fixture write-a\n"}'
-app test ! -e /app/workspace/write-a.txt
-app test ! -e /app/workspace/write-b.txt
-send_chat 9876543211 private '/approve 2'
+printf '%s\n' 'Restart with an active turn.'
+send '/work restart-fixture'
 acked
-app test ! -e /app/workspace/write-a.txt
-count_is messages 'Approved action 2' 0
-send '/approve 2'
-acked
-fx wait turns 'write-a:applied' 1
-wait_message ', action 2: applied.'
-app sh -ec 'printf "exact fixture write-a\n" | cmp - /app/workspace/write-a.txt'
-file_before=$(app stat -c '%i:%s:%y:%z' /app/workspace/write-a.txt)
-
-printf '%s\n' 'Restart with an active turn and a pending approval.'
+fx wait turns 'restart-fixture' 1
 app_id=$(compose ps -q app)
 compose stop app
 test "$(docker inspect --format '{{.State.ExitCode}}' "$app_id")" = 0
 compose start app
 # Do not send a Telegram update until the active task resumes on its own.
-fx wait turns 'write-a:applied' 2
-wait_message 'fixture write-a done'
-app test ! -e /app/workspace/write-b.txt
+fx wait turns 'restart-fixture' 2
+wait_message 'fixture resumed result'
 fx replay "$delegate_id" "$chat" private '/work delegated-fixture'
 send '/notes'
-wait_message 'survivor: durable fixture value'
-send '/approve 1'
 acked
-wait_message 'fixture write-b done'
-app sh -ec 'printf "exact fixture write-b\n" | cmp - /app/workspace/write-b.txt'
+wait_message 'survivor: durable fixture value'
 count_is turns 'delegated-fixture' 1
-count_is messages 'To approve this action only, send /approve 2' 1
-count_is messages ', action 2: applied.' 1
-count_is messages 'fixture write-a done' 1
-count_is messages 'fixture write-b done' 1
-test "$(app stat -c '%i:%s:%y:%z' /app/workspace/write-a.txt)" = "$file_before"
+count_is messages 'fixture resumed result' 1
 
 printf '%s\n' 'Docker integration passed.'

@@ -12,46 +12,17 @@ import (
 	"time"
 )
 
-type callback = func(context.Context, string, json.RawMessage) (string, error)
+type runnerFunc func(context.Context, string) (string, error)
 
-type runnerFunc func(context.Context, string, callback) (string, error)
-
-func (r runnerFunc) Run(ctx context.Context, prompt string, call callback) (string, error) {
-	return r(ctx, prompt, call)
+func (r runnerFunc) Run(ctx context.Context, prompt string) (string, error) {
+	return r(ctx, prompt)
 }
 
-var echoRunner runnerFunc = func(context.Context, string, callback) (string, error) { return "done", nil }
+var echoRunner runnerFunc = func(context.Context, string) (string, error) { return "done", nil }
 
-type fakeFiles struct {
-	aliases []string
-	check   func(Action, map[string]bool) (bool, error)
-	execute func(Action) (string, error)
-	outcome func(Action) (bool, bool, error)
-}
-
-func (f fakeFiles) Aliases() []string { return f.aliases }
-func (f fakeFiles) Check(a Action, grants map[string]bool) (bool, error) {
-	if f.check != nil {
-		return f.check(a, grants)
-	}
-	return false, nil
-}
-func (f fakeFiles) Execute(a Action) (string, error) {
-	if f.execute != nil {
-		return f.execute(a)
-	}
-	return "file result", nil
-}
-func (f fakeFiles) CheckOutcome(a Action) (bool, bool, error) {
-	if f.outcome != nil {
-		return f.outcome(a)
-	}
-	return false, false, nil
-}
-
-func openEngine(t *testing.T, dir string, r Runner, f Files) *Engine {
+func openEngine(t *testing.T, dir string, r Runner) *Engine {
 	t.Helper()
-	e, err := Open(dir, r, f)
+	e, err := Open(dir, r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,8 +118,8 @@ func receive[T any](t *testing.T, ch <-chan T) T {
 
 func TestAcceptCursorAndStateLock(t *testing.T) {
 	dir := t.TempDir()
-	e := openEngine(t, dir, echoRunner, fakeFiles{})
-	if other, err := Open(dir, echoRunner, fakeFiles{}); err == nil {
+	e := openEngine(t, dir, echoRunner)
+	if other, err := Open(dir, echoRunner); err == nil {
 		closeEngine(t, other)
 		t.Fatal("second engine opened the same directory")
 	}
@@ -163,7 +134,7 @@ func TestAcceptCursorAndStateLock(t *testing.T) {
 	if err := e.Accept(103, "/work after close"); err == nil {
 		t.Fatal("closed engine accepted an update")
 	}
-	e = openEngine(t, dir, echoRunner, fakeFiles{})
+	e = openEngine(t, dir, echoRunner)
 	if got := e.Offset(); got != 103 {
 		t.Fatalf("offset after reopen = %d, want 103", got)
 	}
@@ -179,8 +150,34 @@ func TestAcceptCursorAndStateLock(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsOldSnapshotWithoutChangingIt(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	const old = `{"version":1,"tasks":{},"notebook":{},"grants":{"reference":true}}`
+	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if e, err := Open(dir, echoRunner); err == nil {
+		closeEngine(t, e)
+		t.Fatal("opened a version 1 snapshot")
+	} else if !strings.Contains(err.Error(), "unsupported engine state version 1") {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != old {
+		t.Fatalf("version 1 state changed: %s, %v", data, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	e := openEngine(t, dir, echoRunner)
+	acceptUpdate(t, e, 1, "/work start fresh")
+	if s := stored(t, e); s.Version != stateVersion || len(s.Tasks) != 1 {
+		t.Fatalf("did not create a new snapshot: %+v", s)
+	}
+}
+
 func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
-	e := openEngine(t, t.TempDir(), echoRunner, fakeFiles{})
+	e := openEngine(t, t.TempDir(), echoRunner)
 	if err := os.Mkdir(filepath.Join(e.dir, "state.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +199,7 @@ func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
 func TestNotebookHistoryAndSchedule(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	var prompts []string
-	r := runnerFunc(func(_ context.Context, prompt string, _ callback) (string, error) {
+	r := runnerFunc(func(_ context.Context, prompt string) (string, error) {
 		prompts = append(prompts, prompt)
 		switch len(prompts) {
 		case 1:
@@ -218,12 +215,12 @@ func TestNotebookHistoryAndSchedule(t *testing.T) {
 		}
 	})
 	dir := t.TempDir()
-	e := openEngine(t, dir, r, fakeFiles{})
+	e := openEngine(t, dir, r)
 	acceptUpdate(t, e, 1, "/note colour old-value")
 	acceptUpdate(t, e, 2, "Old chat says old-value.")
 	runJob(t, e)
 	closeEngine(t, e)
-	e = openEngine(t, dir, r, fakeFiles{})
+	e = openEngine(t, dir, r)
 	e.now = func() time.Time { return now }
 	acceptUpdate(t, e, 3, "/note colour new-value")
 	acceptUpdate(t, e, 4, "Is it updated?")
@@ -251,7 +248,7 @@ func TestNotebookHistoryAndSchedule(t *testing.T) {
 		t.Fatalf("unexpected notebook or schedule state: %+v", s)
 	}
 	closeEngine(t, e)
-	e = openEngine(t, dir, r, fakeFiles{})
+	e = openEngine(t, dir, r)
 	now = now.Add(11 * time.Second)
 	e.now = func() time.Time { return now }
 	runJob(t, e)

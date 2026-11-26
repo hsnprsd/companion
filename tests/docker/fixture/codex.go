@@ -74,36 +74,29 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		return err
 	}
 	var start struct {
-		Model       string `json:"model"`
-		Provider    string `json:"modelProvider"`
-		Permissions string `json:"permissions"`
-		CWD         string `json:"cwd"`
-		Approval    string `json:"approvalPolicy"`
-		Ephemeral   bool   `json:"ephemeral"`
-		Tools       []struct {
-			Name string `json:"name"`
-		} `json:"dynamicTools"`
+		Model       string          `json:"model"`
+		Provider    string          `json:"modelProvider"`
+		Permissions string          `json:"permissions"`
+		CWD         string          `json:"cwd"`
+		Approval    string          `json:"approvalPolicy"`
+		Ephemeral   bool            `json:"ephemeral"`
+		Tools       json.RawMessage `json:"dynamicTools"`
 	}
 	m, err = read("thread/start", &start)
 	if err != nil {
 		return err
 	}
-	advertised := map[string]bool{}
-	for _, tool := range start.Tools {
-		advertised[tool.Name] = true
-	}
-	if start.Model != model || start.Provider != "openai" || start.Permissions != "companion-scratch" || start.CWD != "/scratch" || start.Approval != "never" || !start.Ephemeral ||
-		!advertised["read_file"] || !advertised["list_files"] || !advertised["write_file"] {
-		return fmt.Errorf("wrong model, thread restrictions, or file tools: %s", m.Params)
+	if start.Model != model || start.Provider != "openai" || start.Permissions != "companion-workspace" || start.CWD != "/workspace" || start.Approval != "never" || !start.Ephemeral || len(start.Tools) != 0 {
+		return fmt.Errorf("wrong model, thread restrictions, or unexpected dynamic tools: %s", m.Params)
 	}
 	const thread = "fixture-thread"
 	const turn = "fixture-turn"
 	if err := reply(m, fields{
 		"thread": fields{"id": thread, "ephemeral": true, "model": model, "environments": []fields{
-			{"environmentId": "local", "cwd": "/scratch", "runtimeWorkspaceRoots": []string{"/scratch"}},
+			{"environmentId": "local", "cwd": "/workspace", "runtimeWorkspaceRoots": []string{"/workspace"}},
 		}},
-		"model": model, "modelProvider": "openai", "approvalPolicy": "never", "cwd": "/scratch",
-		"activePermissionProfile": fields{"id": "companion-scratch", "extends": nil},
+		"model": model, "modelProvider": "openai", "approvalPolicy": "never", "cwd": "/workspace",
+		"activePermissionProfile": fields{"id": "companion-workspace", "extends": nil},
 		"sandbox": fields{
 			"type": "workspaceWrite", "networkAccess": false, "writableRoots": []string{},
 			"excludeSlashTmp": true, "excludeTmpdirEnvVar": true,
@@ -133,45 +126,12 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if err := reply(m, fields{"turn": fields{"id": turn, "status": "inProgress"}}); err != nil {
 		return err
 	}
-	tool := func(name, path, content, expected string, success bool) error {
-		args := fields{"path": path}
-		if name == "write_file" {
-			args["content"] = content
-		}
-		const call = "fixture-call"
-		if err := wsjson.Write(ctx, ws, fields{"id": call, "method": "item/tool/call", "params": fields{
-			"threadId": thread, "turnId": turn, "callId": call, "tool": name, "arguments": args,
-		}}); err != nil {
-			return err
-		}
-		var result struct {
-			Items []struct {
-				Text string `json:"text"`
-			} `json:"contentItems"`
-			Success bool `json:"success"`
-		}
-		var msg rpc
-		if err := wsjson.Read(ctx, ws, &msg); err != nil {
-			return err
-		}
-		if string(msg.ID) != `"`+call+`"` || len(msg.Error) != 0 || json.Unmarshal(msg.Result, &result) != nil ||
-			result.Success != success || len(result.Items) != 1 || !strings.Contains(result.Items[0].Text, expected) {
-			return fmt.Errorf("unexpected %s reply for %s (wanted %q, success %t): result=%s error=%s", name, path, expected, success, msg.Result, msg.Error)
-		}
-		return nil
-	}
 	name := p.Request
-	for _, a := range p.Actions {
-		if a.Decision == "approved" && a.Outcome == "applied" {
-			name += ":applied"
-			break
-		}
-	}
 	f.mu.Lock()
 	f.Turns = append(f.Turns, name)
 	n := f.transcript.count("turns", name)
 	f.mu.Unlock()
-	if name == "write-a:applied" && n == 1 {
+	if name == "restart-fixture" && n == 1 {
 		// Keep an actual model step active until Docker stops the app. Do not
 		// send a successful result before the restarted app resumes the step.
 		m, err := read("turn/interrupt", nil)
@@ -180,7 +140,7 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		}
 		return reply(m, fields{})
 	}
-	final, err := scriptedAnswer(p, name, tool)
+	final, err := scriptedAnswer(p)
 	if err != nil {
 		return err
 	}
@@ -195,13 +155,10 @@ type prompt struct {
 	Request string            `json:"user_request"`
 	Kind    string            `json:"kind"`
 	Notes   map[string]string `json:"notebook"`
-	Actions []struct {
-		Decision string `json:"decision"`
-		Outcome  string `json:"outcome"`
-	} `json:"actions_and_decisions"`
 }
 
-func scriptedAnswer(p prompt, name string, tool func(name, path, content, expected string, success bool) error) (string, error) {
+func scriptedAnswer(p prompt) (string, error) {
+	name := p.Request
 	switch name {
 	case "hello-fixture":
 		return "fixture conversation reply", nil
@@ -218,17 +175,11 @@ func scriptedAnswer(p prompt, name string, tool func(name, path, content, expect
 			return "", fmt.Errorf("wrong durable notebook context for %s: %+v", name, p.Notes)
 		}
 		return "fixture " + name, nil
-	case "read-alias-blocked", "read-alias-revoked":
-		return "fixture " + name, tool("read_file", "@manual/guide.txt", "", "not granted", false)
-	case "read-alias-granted":
-		return "fixture " + name, tool("read_file", "@manual/guide.txt", "", "fixture external data", true)
-	case "write-alias-blocked":
-		return "fixture " + name, tool("write_file", "@manual/guide.txt", "not allowed", "read-only", false)
-	case "write-a", "write-b":
-		return "fixture waiting for " + name, tool("write_file", name+".txt", "exact fixture "+name+"\n", "not executed", true)
-	case "write-a:applied", "write-b:applied":
-		path, _, _ := strings.Cut(name, ":")
-		return "fixture " + path + " done", tool("read_file", path+".txt", "", "exact fixture "+path, true)
+	case "restart-fixture":
+		if p.Notes["survivor"] != "durable fixture value" {
+			return "", fmt.Errorf("notebook entry missing after restart")
+		}
+		return "fixture resumed result", nil
 	default:
 		return "", fmt.Errorf("unexpected user request: %q", name)
 	}

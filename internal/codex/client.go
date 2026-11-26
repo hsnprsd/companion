@@ -12,8 +12,8 @@ import (
 
 const (
 	provider          = "openai"
-	permissionProfile = "companion-scratch"
-	scratchDir        = "/scratch"
+	permissionProfile = "companion-workspace"
+	workspaceDir      = "/workspace"
 	codexHome         = "/home/node/.codex"
 )
 
@@ -26,35 +26,16 @@ type Client struct {
 
 type params = map[string]any
 
-var restrictionConfig = params{
-	"permissions": params{permissionProfile: params{
-		"filesystem": params{":minimal": "read", scratchDir: "write"},
-		"network":    params{"enabled": false},
-	}},
-	"projects":   params{scratchDir: params{"trust_level": "untrusted"}},
-	"web_search": "live",
-	// The installed model's Responses Lite path uses the native standalone
-	// search extension rather than a top-level web_search tool declaration.
-	"features": params{"standalone_web_search": true},
-	"shell_environment_policy": params{
-		"inherit": "none",
-		"set":     params{"HOME": scratchDir, "TMPDIR": scratchDir, "PATH": "/usr/local/bin:/usr/bin:/bin"},
-	},
-}
-
 func (c Client) restrictions() params {
 	return params{
 		"model": c.Model, "approvalPolicy": "never", "approvalsReviewer": "user",
-		"permissions": permissionProfile, "cwd": scratchDir, "runtimeWorkspaceRoots": []string{scratchDir},
+		"permissions": permissionProfile, "cwd": workspaceDir, "runtimeWorkspaceRoots": []string{workspaceDir},
 	}
 }
 
 // Run sends prompt to a fresh ephemeral thread and returns its final assistant
-// message. It calls call synchronously for allowed dynamic tool calls. The
-// callback must enforce workspace permissions and approvals, honor ctx, and
-// return only text (including error messages) safe to send to the model.
-// Run does not retry a turn or an action.
-func (c Client) Run(ctx context.Context, prompt string, call func(context.Context, string, json.RawMessage) (string, error)) (string, error) {
+// message. The runner handles its native tools. Run does not retry a turn.
+func (c Client) Run(ctx context.Context, prompt string) (string, error) {
 	if c.Model == "" || strings.TrimSpace(c.Model) != c.Model {
 		return "", errors.New("codex: specify an exact model ID")
 	}
@@ -88,8 +69,8 @@ func (c Client) Run(ctx context.Context, prompt string, call func(context.Contex
 	start["ephemeral"] = true
 	start["modelProvider"] = provider
 	start["allowProviderModelFallback"] = false
-	start["config"] = restrictionConfig
-	start["dynamicTools"] = tools
+	// Responses Lite uses the native standalone search extension.
+	start["config"] = params{"web_search": "live", "features": params{"standalone_web_search": true}}
 	var started struct {
 		Thread struct {
 			ID           string  `json:"id"`
@@ -124,16 +105,16 @@ func (c Client) Run(ctx context.Context, prompt string, call func(context.Contex
 		return "", fmt.Errorf("codex: app-server did not select configured model %q", c.Model)
 	}
 	if started.Thread.ID == "" || !started.Thread.Ephemeral || len(started.Thread.Environments) != 1 ||
-		started.Thread.Environments[0].ID != "local" || started.Thread.Environments[0].CWD != scratchDir ||
-		len(started.Thread.Environments[0].Roots) != 1 || started.Thread.Environments[0].Roots[0] != scratchDir ||
-		started.CWD != scratchDir || started.ApprovalPolicy != "never" || started.Profile.ID != permissionProfile || started.Profile.Extends != nil ||
+		started.Thread.Environments[0].ID != "local" || started.Thread.Environments[0].CWD != workspaceDir ||
+		len(started.Thread.Environments[0].Roots) != 1 || started.Thread.Environments[0].Roots[0] != workspaceDir ||
+		started.CWD != workspaceDir || started.ApprovalPolicy != "never" || started.Profile.ID != permissionProfile || started.Profile.Extends != nil ||
 		started.Sandbox.Type != "workspaceWrite" || started.Sandbox.NetworkAccess == nil || *started.Sandbox.NetworkAccess ||
 		!started.Sandbox.ExcludeSlashTmp || !started.Sandbox.ExcludeTmpdirEnvVar ||
-		(len(started.Sandbox.WritableRoots) != 0 && (len(started.Sandbox.WritableRoots) != 1 || started.Sandbox.WritableRoots[0] != scratchDir)) {
+		(len(started.Sandbox.WritableRoots) != 0 && (len(started.Sandbox.WritableRoots) != 1 || started.Sandbox.WritableRoots[0] != workspaceDir)) {
 		return "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
 	}
 
-	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, call: call, calls: make(map[string]bool)}
+	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model}
 	turn := c.restrictions()
 	turn["threadId"] = t.threadID
 	turn["input"] = []params{{"type": "text", "text": prompt, "text_elements": []any{}}}
@@ -173,8 +154,6 @@ type turnRun struct {
 	s                *session
 	threadID, turnID string
 	model            string
-	call             func(context.Context, string, json.RawMessage) (string, error)
-	calls            map[string]bool
 	final, last      string
 	done             bool
 }
@@ -212,7 +191,7 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 			}
 			return nil
 		}
-		// Do not invoke a tool before the client knows the authoritative turn ID.
+		// Match early events after the server returns the turn ID.
 		size += len(m.Params)
 		if len(pending) >= 256 || size > maxMessageBytes {
 			return errors.New("codex: too many events before turn/start reply")
@@ -254,7 +233,7 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 
 func turnEvent(m message) bool {
 	if len(m.ID) != 0 {
-		return m.Method == "item/tool/call"
+		return false
 	}
 	switch m.Method {
 	case "item/completed", "turn/completed", "model/rerouted", "thread/settings/updated":
@@ -268,9 +247,6 @@ func (t *turnRun) dispatch(ctx context.Context, m message) error {
 		return nil
 	}
 	if len(m.ID) != 0 {
-		if m.Method == "item/tool/call" && !t.done {
-			return t.toolCall(ctx, m)
-		}
 		return t.s.reject(ctx, m, -32601, "server request not allowed")
 	}
 	if !turnEvent(m) {

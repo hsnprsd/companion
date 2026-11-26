@@ -16,11 +16,10 @@ RUN apt-get update \
     && codex --version
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 RUN install -d -m 0700 -o 1000 -g 1000 /home/node/.codex \
-    && install -d -m 0700 -o 1000 -g 1000 /scratch
-WORKDIR /scratch
+    && install -d -m 0700 -o 1000 -g 1000 /workspace
+WORKDIR /workspace
 USER 1000:1000
-# Give bubblewrap directory targets for the sandbox profile's scratch masks.
-ENTRYPOINT ["/bin/sh", "-ec", "mkdir -p /scratch/.agents /scratch/.codex; exec codex app-server \"$@\"", "codex-app-server"]
+ENTRYPOINT ["codex", "app-server"]
 
 FROM go-base AS fixture-build
 COPY go.* ./
@@ -37,8 +36,8 @@ FROM debian:bookworm-slim AS app
 COPY --from=go-base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=app-build /out/companion /usr/local/bin/companion
 # Docker copies the ownership of these directories into new named volumes.
-RUN install -d -m 0700 -o 1000 -g 1000 /app/state /app/workspace \
-    && install -d -m 0755 /etc/companion /app/external
+RUN install -d -m 0700 -o 1000 -g 1000 /app/state \
+    && install -d -m 0755 /etc/companion
 WORKDIR /app
 USER 1000:1000
 ENTRYPOINT ["/usr/local/bin/companion"]

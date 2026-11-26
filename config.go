@@ -17,8 +17,6 @@ type config struct {
 	TelegramURL string
 	CodexURL    string
 	StateDir    string
-	Workspace   string
-	ExternalDir string
 }
 
 var (
@@ -31,8 +29,6 @@ func loadConfig() (config, error) {
 		TelegramURL: envDefault("COMPANION_TELEGRAM_URL", "https://api.telegram.org"),
 		CodexURL:    envDefault("COMPANION_CODEX_URL", "ws://127.0.0.1:4500"),
 		StateDir:    envDefault("COMPANION_STATE_DIR", "./state"),
-		Workspace:   envDefault("COMPANION_WORKSPACE", "./workspace"),
-		ExternalDir: os.Getenv("COMPANION_EXTERNAL_DIR"),
 	}
 	data, err := readSmallFile(configPath(), 4096)
 	if err != nil {

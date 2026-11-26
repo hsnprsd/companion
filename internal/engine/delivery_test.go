@@ -39,7 +39,7 @@ func recordSend(t *testing.T, e *Engine, part string, err error) {
 func TestDefiniteRejectionRetriesAfterRestart(t *testing.T) {
 	now := time.Now()
 	dir := t.TempDir()
-	e := openEngine(t, dir, echoRunner, fakeFiles{})
+	e := openEngine(t, dir, echoRunner)
 	e.now = func() time.Time { return now }
 	acceptUpdate(t, e, 1, "/work remember this")
 	part, _ := nextSend(t, e)
@@ -48,7 +48,7 @@ func TestDefiniteRejectionRetriesAfterRestart(t *testing.T) {
 	}
 	recordSend(t, e, part, fmt.Errorf("wrapped: %w", sendError{retry: 7 * time.Second}))
 	closeEngine(t, e)
-	e = openEngine(t, dir, echoRunner, fakeFiles{})
+	e = openEngine(t, dir, echoRunner)
 	e.now = func() time.Time { return now }
 	if got, delay := nextSend(t, e); got != "" || delay != 7*time.Second {
 		t.Fatalf("retry after reopen: message %q, delay %s", got, delay)
@@ -75,13 +75,13 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			e := openEngine(t, dir, echoRunner, fakeFiles{})
+			e := openEngine(t, dir, echoRunner)
 			acceptUpdate(t, e, 1, "/work task")
 			acceptUpdate(t, e, 2, "/notes")
 			original, _ := nextSend(t, e)
 			if tc.restart {
 				closeEngine(t, e)
-				e = openEngine(t, dir, echoRunner, fakeFiles{})
+				e = openEngine(t, dir, echoRunner)
 			} else {
 				recordSend(t, e, original, tc.result)
 			}
@@ -98,7 +98,7 @@ func TestAmbiguousSendDoesNotReplay(t *testing.T) {
 }
 
 func TestPermanentRejectionDoesNotBlockOutbox(t *testing.T) {
-	e := openEngine(t, t.TempDir(), echoRunner, fakeFiles{})
+	e := openEngine(t, t.TempDir(), echoRunner)
 	acceptUpdate(t, e, 1, "/help")
 	acceptUpdate(t, e, 2, "/notes")
 	part, _ := nextSend(t, e)
@@ -115,9 +115,9 @@ func TestPermanentRejectionDoesNotBlockOutbox(t *testing.T) {
 
 func TestUTF16ChunksResumeWithoutReplayingConfirmedPart(t *testing.T) {
 	message := "a" + strings.Repeat("😀", 2048) + "\nremaining text"
-	r := runnerFunc(func(context.Context, string, callback) (string, error) { return message, nil })
+	r := runnerFunc(func(context.Context, string) (string, error) { return message, nil })
 	dir := t.TempDir()
-	e := openEngine(t, dir, r, fakeFiles{})
+	e := openEngine(t, dir, r)
 	acceptUpdate(t, e, 1, "Please talk")
 	runJob(t, e)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -132,7 +132,7 @@ func TestUTF16ChunksResumeWithoutReplayingConfirmedPart(t *testing.T) {
 		t.Fatalf("bad chunk or loop result: %d units, %v", units(first), err)
 	}
 	closeEngine(t, e)
-	e = openEngine(t, dir, r, fakeFiles{})
+	e = openEngine(t, dir, r)
 	rest, _ := nextSend(t, e)
 	if rest != strings.TrimPrefix(message, first) || units(rest) > telegramLimit {
 		t.Fatalf("reopened queue did not resume at the next character: %q", rest)

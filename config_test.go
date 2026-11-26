@@ -33,31 +33,6 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestPrepareDirectoriesRejectsExposedStateAndSecrets(t *testing.T) {
-	root := t.TempDir()
-	cfg := config{StateDir: filepath.Join(root, "workspace/state"), Workspace: filepath.Join(root, "workspace")}
-	if err := prepareDirectories(cfg); err == nil {
-		t.Fatal("state inside workspace permitted")
-	}
-	cfg.StateDir = filepath.Join(root, "independent-state")
-	configPath := filepath.Join(cfg.Workspace, "secret")
-	if err := os.WriteFile(configPath, []byte(`{}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	linked := filepath.Join(root, "linked-secret")
-	if err := os.Symlink(configPath, linked); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("COMPANION_CONFIG", linked)
-	if err := prepareDirectories(cfg); err == nil {
-		t.Fatal("a private config inside workspace permitted")
-	}
-	setConfigFile(t, `{}`)
-	if err := prepareDirectories(cfg); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestSuperviseCancelsOnLoopFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

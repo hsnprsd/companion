@@ -3,7 +3,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -16,31 +15,14 @@ import (
 	"unicode/utf8"
 )
 
-// Runner runs one model step and returns when its context ends. The callback
-// is the only entry point for tools that use the durable workspace.
+// Runner runs one model step and returns when its context ends.
 type Runner interface {
-	Run(context.Context, string, func(context.Context, string, json.RawMessage) (string, error)) (string, error)
-}
-
-// Files enforces file tool access. Implement Aliases() []string to make mounted
-// read-only aliases available for /grant. Check must not change files.
-type Files interface {
-	Check(action Action, grants map[string]bool) (requiresApproval bool, err error)
-	Execute(action Action) (string, error)
-	CheckOutcome(action Action) (applied bool, known bool, err error)
-}
-
-// Action is the exact file tool call that the engine can show for approval.
-type Action struct {
-	Tool    string `json:"tool"`
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Run(context.Context, string) (string, error)
 }
 
 type activeStep struct {
 	id, revision int64
 	cancel       context.CancelFunc
-	toolMu       sync.Mutex
 }
 
 // Engine owns the snapshot and serializes all durable state changes.
@@ -54,8 +36,6 @@ type Engine struct {
 	lastUpdate  time.Time
 	failed      error
 	runner      Runner
-	files       Files
-	aliases     map[string]bool
 	active      *activeStep
 	lastTaskID  int64
 	working     bool
@@ -66,11 +46,10 @@ type Engine struct {
 	stepTimeout time.Duration
 }
 
-// Open loads or initializes the durable snapshot. Work checks interrupted file
-// actions before it starts new work.
-func Open(stateDir string, runner Runner, files Files) (*Engine, error) {
-	if runner == nil || files == nil || stateDir == "" {
-		return nil, errors.New("engine requires a state directory, runner, and files")
+// Open loads or initializes the durable snapshot.
+func Open(stateDir string, runner Runner) (*Engine, error) {
+	if runner == nil || stateDir == "" {
+		return nil, errors.New("engine requires a state directory and runner")
 	}
 	dir, err := filepath.Abs(stateDir)
 	if err != nil {
@@ -93,16 +72,9 @@ func Open(stateDir string, runner Runner, files Files) (*Engine, error) {
 		return nil, fmt.Errorf("load engine state: %w", err)
 	}
 	e := &Engine{
-		dir: dir, lock: lock, state: s, offset: s.Offset, lastUpdate: s.LastUpdate, runner: runner, files: files,
-		aliases: make(map[string]bool), workWake: make(chan struct{}, 1), sendWake: make(chan struct{}, 1),
+		dir: dir, lock: lock, state: s, offset: s.Offset, lastUpdate: s.LastUpdate, runner: runner,
+		workWake: make(chan struct{}, 1), sendWake: make(chan struct{}, 1),
 		now: time.Now, stepTimeout: 5 * time.Minute,
-	}
-	if f, ok := files.(interface{ Aliases() []string }); ok {
-		for _, name := range f.Aliases() {
-			if validAlias(name) {
-				e.aliases[name] = true
-			}
-		}
 	}
 	interrupted := len(s.Outbox) != 0 && s.Outbox[0].Sending
 	for _, t := range s.Tasks {

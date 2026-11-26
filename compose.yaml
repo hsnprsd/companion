@@ -18,14 +18,9 @@ services:
     environment:
       COMPANION_CONFIG: /etc/companion/companion.json
       COMPANION_STATE_DIR: /app/state
-      COMPANION_WORKSPACE: /app/workspace
       COMPANION_CODEX_URL: ws://127.0.0.1:4500
       COMPANION_TELEGRAM_URL: ${COMPANION_TELEGRAM_URL:-https://api.telegram.org}
-      COMPANION_EXTERNAL_DIR: ${COMPANION_EXTERNAL_DIR:-}
     volumes:
-      - type: volume
-        source: workspace
-        target: /app/workspace
       - type: volume
         source: state
         target: /app/state
@@ -43,15 +38,13 @@ services:
       - --listen
       - ws://127.0.0.1:4500
       - -c
-      - 'web_search="live"'
+      - 'default_permissions="companion-workspace"'
       - -c
-      - 'default_permissions="companion-scratch"'
+      - 'permissions.companion-workspace={filesystem={":minimal"="read","/workspace"="write"},network={enabled=false}}'
       - -c
-      - 'permissions.companion-scratch={filesystem={":minimal"="read","/scratch"="write","/scratch/.codex"="deny","/scratch/.agents"="deny"},network={enabled=false}}'
+      - 'projects."/workspace".trust_level="untrusted"'
       - -c
-      - 'projects."/scratch".trust_level="untrusted"'
-      - -c
-      - 'shell_environment_policy={inherit="none",set={HOME="/scratch",TMPDIR="/scratch",PATH="/usr/local/bin:/usr/bin:/bin"}}'
+      - 'shell_environment_policy={inherit="none",set={HOME="/workspace",TMPDIR="/workspace",PATH="/usr/local/bin:/usr/bin:/bin"}}'
       - -c
       - 'mcp_servers={}'
       - -c
@@ -65,10 +58,11 @@ services:
     security_opt:
       - no-new-privileges:true
       - seccomp=./docker/codex-seccomp.json
-    tmpfs:
-      - /tmp
-      - /scratch:uid=1000,gid=1000,mode=0700,size=256m
+    tmpfs: [/tmp]
     volumes:
+      - type: volume
+        source: workspace
+        target: /workspace
       - type: volume
         source: codex-auth
         target: /home/node/.codex

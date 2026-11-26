@@ -55,7 +55,7 @@ func testRunner(t *testing.T) (Client, <-chan *websocket.Conn) {
 	return Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Model: testModel}, connections
 }
 
-func launch(t *testing.T, client Client, connections <-chan *websocket.Conn, call func(context.Context, string, json.RawMessage) (string, error)) (*peer, <-chan outcome, context.CancelFunc) {
+func launch(t *testing.T, client Client, connections <-chan *websocket.Conn) (*peer, <-chan outcome, context.CancelFunc) {
 	t.Helper()
 	peerCtx, cancelPeer := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancelPeer)
@@ -63,7 +63,7 @@ func launch(t *testing.T, client Client, connections <-chan *websocket.Conn, cal
 	t.Cleanup(cancel)
 	results := make(chan outcome, 1)
 	go func() {
-		text, err := client.Run(ctx, "fixture prompt", call)
+		text, err := client.Run(ctx, "fixture prompt")
 		results <- outcome{text, err}
 	}()
 	select {
@@ -146,10 +146,10 @@ func (p *peer) catalog() {
 func threadResult(id string) params {
 	return params{
 		"thread": params{"id": id, "ephemeral": true, "model": testModel, "environments": []params{
-			{"environmentId": "local", "cwd": "/scratch", "runtimeWorkspaceRoots": []string{"/scratch"}},
+			{"environmentId": "local", "cwd": "/workspace", "runtimeWorkspaceRoots": []string{"/workspace"}},
 		}},
-		"cwd": "/scratch", "model": testModel, "modelProvider": "openai", "approvalPolicy": "never",
-		"activePermissionProfile": params{"id": "companion-scratch", "extends": nil},
+		"cwd": "/workspace", "model": testModel, "modelProvider": "openai", "approvalPolicy": "never",
+		"activePermissionProfile": params{"id": "companion-workspace", "extends": nil},
 		"sandbox": params{
 			"type": "workspaceWrite", "writableRoots": []string{}, "networkAccess": false,
 			"excludeTmpdirEnvVar": true, "excludeSlashTmp": true,
@@ -160,9 +160,9 @@ func threadResult(id string) params {
 func assertRestrictions(t *testing.T, args params) {
 	t.Helper()
 	check(t, args["model"], testModel)
-	check(t, args["cwd"], "/scratch")
-	check(t, args["runtimeWorkspaceRoots"], []any{"/scratch"})
-	check(t, args["permissions"], "companion-scratch")
+	check(t, args["cwd"], "/workspace")
+	check(t, args["runtimeWorkspaceRoots"], []any{"/workspace"})
+	check(t, args["permissions"], "companion-workspace")
 	check(t, args["approvalPolicy"], "never")
 	check(t, args["sandboxPolicy"], nil)
 	check(t, args["sandbox"], nil)
@@ -179,25 +179,8 @@ func (p *peer) thread(id string) {
 	cfg := args["config"].(map[string]any)
 	check(p.t, cfg["features"], params{"standalone_web_search": true})
 	check(p.t, cfg["web_search"], "live")
-	check(p.t, cfg["projects"], params{"/scratch": params{"trust_level": "untrusted"}})
-	check(p.t, cfg["permissions"], params{"companion-scratch": params{
-		"filesystem": params{":minimal": "read", "/scratch": "write"},
-		"network":    params{"enabled": false},
-	}})
-	declared := args["dynamicTools"].([]any)
-	check(p.t, len(declared), 3)
-	for i, name := range []string{"read_file", "list_files", "write_file"} {
-		spec := declared[i].(map[string]any)
-		check(p.t, spec["type"], "function")
-		check(p.t, spec["name"], name)
-		schema := spec["inputSchema"].(map[string]any)
-		check(p.t, schema["additionalProperties"], false)
-		required := []any{"path"}
-		if name == "write_file" {
-			required = append(required, "content")
-		}
-		check(p.t, schema["required"], required)
-	}
+	check(p.t, cfg["permissions"], nil)
+	check(p.t, args["dynamicTools"], nil)
 	p.reply(m, threadResult(id))
 }
 
@@ -217,10 +200,6 @@ func turnResult(id, status string, items ...params) params {
 
 func item(name, phase, text string) params {
 	return params{"type": name, "phase": phase, "text": text}
-}
-
-func toolParams(thread, turn, id, name, args string) params {
-	return params{"threadId": thread, "turnId": turn, "callId": id, "tool": name, "namespace": nil, "arguments": json.RawMessage(args)}
 }
 
 func waitResult(t *testing.T, results <-chan outcome) outcome {
@@ -245,17 +224,7 @@ func (p *peer) assertRejection(id string, code int) {
 
 func TestRunProtocol(t *testing.T) {
 	client, conns := testRunner(t)
-	called := make(chan string, 3)
-	p, results, _ := launch(t, client, conns, func(ctx context.Context, name string, arguments json.RawMessage) (string, error) {
-		if ctx.Err() != nil {
-			t.Errorf("callback context: %v", ctx.Err())
-		}
-		called <- name + " " + string(arguments)
-		if name == "write_file" {
-			return "", errors.New("approval required")
-		}
-		return "file text", nil
-	})
+	p, results, _ := launch(t, client, conns)
 	p.init()
 	list := p.read("model/list")
 	// Picker ID alone is not an exact model match.
@@ -268,37 +237,13 @@ func TestRunProtocol(t *testing.T) {
 
 	p.serverRequest("escalate", "item/permissions/requestApproval", params{})
 	p.assertRejection(`"escalate"`, -32601)
-	p.serverRequest("read", "item/tool/call", toolParams("thread-1", "turn-1", "call-1", "read_file", `{"path":"notes.txt"}`))
+	p.event("item/completed", params{"threadId": "thread-1", "turnId": "turn-1", "item": item("agentMessage", "", "Early answer")})
 	p.reply(turn, turnResult("turn-1", "inProgress"))
-	result := p.read("")
-	check(t, string(result.ID), `"read"`)
-	check(t, decode[toolResult](t, result.Result), toolResult{[]toolText{{"inputText", "file text"}}, true})
-	check(t, <-called, `read_file {"path":"notes.txt"}`)
 
-	for i, tc := range []struct {
-		method string
-		args   params
-		code   int
-	}{
-		{"item/commandExecution/requestApproval", params{}, -32601},
-		{"account/chatgptAuthTokens/refresh", params{}, -32601},
-		{"item/tool/call", toolParams("foreign", "turn-1", "call-2", "list_files", `{"path":"."}`), -32602},
-		{"item/tool/call", toolParams("thread-1", "foreign", "call-2", "list_files", `{"path":"."}`), -32602},
-		{"item/tool/call", toolParams("thread-1", "turn-1", "call-1", "read_file", `{"path":"notes.txt"}`), -32602},
-		{"item/tool/call", toolParams("thread-1", "turn-1", "call-2", "search_web", `{"query":"no"}`), -32601},
-		{"item/tool/call", toolParams("thread-1", "turn-1", "call-2", "write_file", `{"path":".","content":null}`), -32602},
-		{"item/tool/call", toolParams("thread-1", "turn-1", "call-2", "read_file", `{"path":"a","path":"b"}`), -32602},
-		{"item/tool/call", toolParams("thread-1", "turn-1", "call-2", "read_file", `{"path":"a","bypass":true}`), -32602},
-	} {
-		id, _ := json.Marshal(100 + i)
-		p.serverRequest(json.RawMessage(id), tc.method, tc.args)
-		p.assertRejection(string(id), tc.code)
+	for _, method := range []string{"item/commandExecution/requestApproval", "account/chatgptAuthTokens/refresh", "item/tool/call"} {
+		p.serverRequest(100, method, params{})
+		p.assertRejection("100", -32601)
 	}
-	p.serverRequest(200, "item/tool/call", toolParams("thread-1", "turn-1", "call-2", "write_file", `{"path":"notes.txt","content":"new text"}`))
-	result = p.read("")
-	check(t, string(result.ID), "200")
-	check(t, decode[toolResult](t, result.Result), toolResult{[]toolText{{"inputText", "approval required"}}, false})
-	check(t, <-called, `write_file {"path":"notes.txt","content":"new text"}`)
 
 	for _, i := range []params{
 		item("commandExecution", "", ""), item("webSearch", "", ""),
@@ -313,10 +258,9 @@ func TestRunProtocol(t *testing.T) {
 	done["threadId"] = "thread-1"
 	p.event("turn/completed", done)
 	check(t, waitResult(t, results), outcome{text: "The final answer."})
-	check(t, len(called), 0)
 
 	// The next step opens another socket and starts another ephemeral thread.
-	p, results, _ = launch(t, client, conns, nil)
+	p, results, _ = launch(t, client, conns)
 	p.init()
 	p.catalog()
 	p.thread("thread-2")
@@ -329,7 +273,7 @@ func TestRunProtocol(t *testing.T) {
 
 func TestRunRejectsMissingModel(t *testing.T) {
 	client, conns := testRunner(t)
-	p, results, _ := launch(t, client, conns, nil)
+	p, results, _ := launch(t, client, conns)
 	p.init()
 	p.reply(p.read("model/list"), params{"data": []params{{"id": testModel, "model": "MODEL-EXACT"}}})
 	if result := waitResult(t, results); result.err == nil || !strings.Contains(result.err.Error(), "not in the app-server catalog") {
@@ -352,7 +296,7 @@ func TestRunRejectsUnexpectedThreadSettings(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, conns := testRunner(t)
-			p, results, _ := launch(t, client, conns, nil)
+			p, results, _ := launch(t, client, conns)
 			p.init()
 			p.catalog()
 			result := threadResult("thread")
@@ -369,7 +313,7 @@ func TestRunTurnErrors(t *testing.T) {
 	for _, name := range []string{"reroute", "cancel", "failure", "interrupted", "no answer", "disconnect"} {
 		t.Run(name, func(t *testing.T) {
 			client, conns := testRunner(t)
-			p, results, cancel := launch(t, client, conns, nil)
+			p, results, cancel := launch(t, client, conns)
 			p.init()
 			p.catalog()
 			p.thread("thread")

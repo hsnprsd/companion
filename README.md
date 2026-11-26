@@ -1,6 +1,6 @@
 # Companion
 
-Companion accepts work and sends updates in one private Telegram chat. It keeps tasks, the notebook, approvals, and files across container restarts. See [GOAL.md](GOAL.md) for the project goal and [GLOSSARY.md](GLOSSARY.md) for definitions of Companion terms.
+Companion accepts work and sends updates in one private Telegram chat. It keeps tasks, the notebook, and workspace files across container restarts. See [ARCHITECTURE.md](ARCHITECTURE.md) for the system design, [GOAL.md](GOAL.md) for the project goal, and [GLOSSARY.md](GLOSSARY.md) for definitions of Companion terms.
 
 ## Set up
 
@@ -50,37 +50,31 @@ Use Docker Engine with Compose v2 or later. Use a Linux host or Docker VM that p
 | Change, stop, or retry work | `/change ID New instructions`, `/stop ID`, or `/retry ID` |
 | Add or replace a notebook entry | `/note format Use a short summary first` |
 | Inspect or delete an entry | `/notes` or `/forget format` |
-| See or change external read access | `/access`, `/grant NAME`, or `/revoke NAME` |
 
-A recurring task first runs after its interval. Companion can send a result without a new Telegram message. If a task asks to write a workspace file, check the exact path and text in the approval message. Send the exact `/approve ID` or `/deny ID` shown in that message. An approval authorizes only that proposal. Pending approvals remain valid across a restart. If Companion cannot verify an interrupted write, it reports the uncertainty instead of repeating it.
+A recurring task first runs after its interval. Companion can send a result without a new Telegram message. Companion can change or delete files in its workspace without asking. Stopping a task does not undo file changes.
 
 ## Access and storage
 
-- **Durable workspace:** Companion can list and read workspace files by relative path. Every durable write goes through the Go app and needs explicit approval. The named `workspace` volume belongs to the app.
-- **App state:** The separate named `state` volume holds task progress, the notebook, approvals, and Telegram delivery state. Stop the app before you back up these volumes. Protect backups as private data.
-- **Runner scratch:** Codex uses its normal feature defaults. Native shell commands run in a sandbox with read-only runtime files, a writable `/scratch`, and no shell network access. `/scratch` is temporary and does not contain the app workspace. It is cleared when the runner stops. The runner never approves a sandbox expansion. Native live web search uses OpenAI and can send search queries there; it is not shell network access. No other integrations are configured by Companion.
-- **Container boundary:** Both services run without root, with separate filesystems and no Docker socket. The runner mounts only the external Codex volume as persistent storage. The shell profile does not expose sign-in credentials. App-server listens only on loopback. The app shares the runner's network namespace to reach that listener. Docker publishes no port. Do not attach unrelated containers to this namespace.
+- **Durable workspace:** The runner mounts the named `workspace` volume at `/workspace`. This is the agent's working directory and shell home. The agent can use native tools there without file approvals. The Go app does not mount this volume.
+- **App state:** The app alone mounts the named `state` volume. This volume holds tasks, the notebook, the Telegram cursor, and the outbox. Stop both services before you back up these volumes. Protect backups as private data.
+- **Shell boundary:** The Codex shell can read runtime files and write in `/workspace`. It cannot use the network or read the Codex sign-in files. The runner does not approve permission expansion. Native live web search runs through OpenAI and can send queries and context there. Do not put secrets in the workspace.
+- **Container boundary:** Both services run without root, with separate filesystems, read-only container roots, and no Docker socket. App-server listens only on loopback. The app shares the runner's network namespace to reach that listener. Docker publishes no port. Do not attach unrelated containers to this namespace. Companion does not mount host directories for the agent by default.
 
 The runner uses [a Docker seccomp profile](docker/codex-seccomp.json) based on [Moby profiles at `a0fa708`](https://github.com/moby/profiles/blob/a0fa70805f742f7da15b367770d802ea2a86c68b/seccomp/default.json). Its additions let bubblewrap create nested namespaces and set up their mount tree. The outer container drops all capabilities and uses `no-new-privileges`; it does not use privileged mode or unconfined seccomp. See [the upstream license](docker/MOBY-LICENSE).
 
-### Optional external reads
+### Upgrade from the brokered workspace release
 
-Mount only directories you want Companion to be able to read after you grant access. Define each alias as one direct subdirectory of the external root. For example, add `compose.external.yaml`:
+Remove any Compose override that adds external aliases. The new runner uses the existing `workspace` volume. The app does not read version 1 state snapshots. Stop both services and back up the old state if you need its records. Then reset only the `state` volume. This discards tasks, schedules, notes, the Telegram cursor, and queued replies. Old approval records are not executed. Telegram can still deliver updates that the old app did not acknowledge. Check any file that was being written when the old app stopped.
 
-```yaml
-services:
-  app:
-    environment:
-      COMPANION_EXTERNAL_DIR: /app/external
-    volumes:
-      - type: bind
-        source: /absolute/path/to/reference-files
-        target: /app/external/reference
-        read_only: true
-        bind: {create_host_path: false, selinux: Z}
+For the default Compose project name, run:
+
+```sh
+docker compose down
+docker volume rm companion_state
+docker compose up --build -d
 ```
 
-Run `docker compose -f compose.yaml -f compose.external.yaml up -d`. Send `/grant reference` to permit reads such as `@reference/guide.txt`. Use `/revoke reference` to remove the grant. Companion cannot add a mount or write to an external alias. Do not mount the app config, private keys, or unrelated files under this root. Use the same Compose files for later lifecycle commands.
+If you use a different project name, use the state volume for that project. Do not use `docker compose down -v`: it also removes the workspace volume.
 
 ### Application settings
 
@@ -88,16 +82,15 @@ Run `docker compose -f compose.yaml -f compose.external.yaml up -d`. Send `/gran
 | --- | --- | --- |
 | `COMPANION_CONFIG` | `companion.json` | `/etc/companion/companion.json`; change the host source with `COMPANION_CONFIG_SOURCE` |
 | `COMPANION_STATE_DIR` | `./state` | `/app/state` |
-| `COMPANION_WORKSPACE` | `./workspace` | `/app/workspace` |
 | `COMPANION_CODEX_URL` | `ws://127.0.0.1:4500` | Same |
 | `COMPANION_TELEGRAM_URL` | `https://api.telegram.org` | Same; override only for a trusted fixture |
-| `COMPANION_EXTERNAL_DIR` | Unset | Unset unless you add external mounts |
 
 ## Verify the build
 
 ```sh
 go test -race ./...
 tests/docker/run.sh
+tests/docker/runner.sh
 ```
 
-The test builds the real app image and runs it against fake Telegram and fake Codex WebSocket services. It uses a Docker network with no external access, a generated config, and disposable volumes. It does not read the local config, mount the real Codex volume, or contact Telegram. It checks filtering, stale updates, conversation, delegated and recurring work, notebook changes and recall, external access grants, exact write approval, and restart with active work and another approval pending. The test checks that the completed write is not repeated.
+The app test uses fake Telegram and Codex peers. It checks update filtering, duplicate updates, conversation, delegated and recurring work, notebook recall, removed commands, and restart during active work. The runner probe uses real Codex with a local model fixture. It checks that native shell tools can change workspace files without approval, that the files survive runner replacement, and that the shell cannot read sign-in files or use the network. Both tests use disposable volumes and do not contact Telegram or OpenAI.
