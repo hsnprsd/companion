@@ -16,8 +16,10 @@ import (
 )
 
 // Runner runs one model step. Return an emoji only if canReact is true.
+// Call progress at most once during Run, with a model-written update, and
+// return any callback error.
 type Runner interface {
-	Run(ctx context.Context, prompt string, canReact bool) (text, emoji string, err error)
+	Run(ctx context.Context, prompt string, canReact bool, progress func(string) error) (text, emoji string, err error)
 }
 
 type activeStep struct {
@@ -35,6 +37,7 @@ type Engine struct {
 	lastUpdate  time.Time
 	failed      error
 	runner      Runner
+	typing      func(context.Context) error
 	active      *activeStep
 	working     bool
 	delivering  bool
@@ -44,8 +47,9 @@ type Engine struct {
 	stepTimeout time.Duration
 }
 
-// Open loads or initializes the durable snapshot.
-func Open(stateDir string, runner Runner) (*Engine, error) {
+// Open loads or initializes the durable snapshot. Pass nil to omit typing
+// indicators. A typing sender must return when its context is canceled.
+func Open(stateDir string, runner Runner, typing func(context.Context) error) (*Engine, error) {
 	if runner == nil || stateDir == "" {
 		return nil, errors.New("engine requires a state directory and runner")
 	}
@@ -70,7 +74,7 @@ func Open(stateDir string, runner Runner) (*Engine, error) {
 		return nil, fmt.Errorf("load engine state: %w", err)
 	}
 	e := &Engine{
-		dir: dir, lock: lock, state: s, offset: s.Offset, lastUpdate: s.LastUpdate, runner: runner,
+		dir: dir, lock: lock, state: s, offset: s.Offset, lastUpdate: s.LastUpdate, runner: runner, typing: typing,
 		workWake: make(chan struct{}, 1), sendWake: make(chan struct{}, 1),
 		now: time.Now, stepTimeout: 5 * time.Minute,
 	}

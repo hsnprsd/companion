@@ -1,4 +1,4 @@
-// Package telegram exchanges messages and sends reactions in one private chat.
+// Package telegram exchanges messages, reactions, and typing indicators in one private chat.
 package telegram
 
 import (
@@ -175,16 +175,27 @@ func (c *Client) Send(ctx context.Context, text string) error {
 	return nil
 }
 
+// Typing shows a short-lived typing indicator in the configured chat.
+func (c *Client) Typing(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return c.requestTrue(ctx, "sendChatAction", map[string]any{"chat_id": c.chatID, "action": "typing"})
+}
+
 // React sets the bot's reaction to one message in the configured chat.
 func (c *Client) React(ctx context.Context, messageID int64, emoji string) error {
 	if messageID <= 0 || emoji == "" {
 		return &APIError{code: http.StatusBadRequest}
 	}
-	var result bool
-	if err := c.request(ctx, "setMessageReaction", map[string]any{
+	return c.requestTrue(ctx, "setMessageReaction", map[string]any{
 		"chat_id": c.chatID, "message_id": messageID,
 		"reaction": []map[string]string{{"type": "emoji", "emoji": emoji}},
-	}, &result); err != nil {
+	})
+}
+
+func (c *Client) requestTrue(ctx context.Context, method string, params any) error {
+	var result bool
+	if err := c.request(ctx, method, params, &result); err != nil {
 		return err
 	}
 	if !result {

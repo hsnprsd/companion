@@ -41,8 +41,9 @@ func (c Client) restrictions() params {
 }
 
 // Run returns the final text and optional Telegram reaction from a fresh
-// ephemeral thread. It does not send the reaction or retry the turn.
-func (c Client) Run(ctx context.Context, prompt string, canReact bool) (text, emoji string, err error) {
+// ephemeral thread. It forwards at most one completed commentary message to
+// progress before the final answer. Pass nil to omit commentary.
+func (c Client) Run(ctx context.Context, prompt string, canReact bool, progress func(string) error) (text, emoji string, err error) {
 	if c.Model == "" || strings.TrimSpace(c.Model) != c.Model {
 		return "", "", errors.New("codex: specify an exact model ID")
 	}
@@ -125,7 +126,7 @@ func (c Client) Run(ctx context.Context, prompt string, canReact bool) (text, em
 		return "", "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
 	}
 
-	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, canReact: canReact}
+	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, canReact: canReact, progress: progress}
 	turn := c.restrictions()
 	turn["threadId"] = t.threadID
 	turn["input"] = []params{{"type": "text", "text": prompt, "text_elements": []any{}}}
@@ -186,6 +187,7 @@ type turnRun struct {
 	model            string
 	final, last      string
 	reaction         string
+	progress         func(string) error
 	canReact, done   bool
 }
 
@@ -324,6 +326,14 @@ func (t *turnRun) dispatch(ctx context.Context, m message) error {
 	case "model/rerouted":
 		return errors.New("codex: turn was rerouted from the configured model")
 	case "item/completed":
+		if e.Item.Type == "agentMessage" && e.Item.Phase == "commentary" {
+			if text := strings.TrimSpace(e.Item.Text); text != "" && t.progress != nil && !t.done && t.final == "" {
+				progress := t.progress
+				t.progress = nil
+				return progress(text)
+			}
+			return nil
+		}
 		t.item(e.Item)
 	}
 	return nil

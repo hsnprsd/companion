@@ -10,7 +10,7 @@ import (
 
 type reactionRunner func(context.Context, string, bool) (string, string, error)
 
-func (r reactionRunner) Run(ctx context.Context, prompt string, canReact bool) (string, string, error) {
+func (r reactionRunner) Run(ctx context.Context, prompt string, canReact bool, _ func(string) error) (string, string, error) {
 	return r(ctx, prompt, canReact)
 }
 

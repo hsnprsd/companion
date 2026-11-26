@@ -9,7 +9,7 @@ See [README.md](README.md) for setup and [GLOSSARY.md](GLOSSARY.md) for terms.
 ```mermaid
 flowchart LR
     User[Private Telegram chat] <--> TG[Telegram Bot API]
-    TG <-->|HTTPS: getUpdates / sendMessage / setMessageReaction| App[Go app]
+    TG <-->|HTTPS: getUpdates / sendMessage / setMessageReaction / sendChatAction| App[Go app]
     App <-->|Loopback WebSocket: turns| Runner[Codex app-server]
     App <--> State[(State volume)]
     Config[Read-only Companion config] --> App
@@ -23,7 +23,7 @@ flowchart LR
 | Component | Responsibility | Source |
 | --- | --- | --- |
 | App entry point | Validate configuration and supervise the service loops. | [`main.go`](main.go), [`config.go`](config.go) |
-| Telegram client | Poll for text updates from the configured private chat. Send plain text and reactions. | [`internal/telegram`](internal/telegram) |
+| Telegram client | Poll for text updates from the configured private chat. Send plain text, reactions, and typing indicators. | [`internal/telegram`](internal/telegram) |
 | Engine | Handle commands, save state, select work, build prompts, and drain the outbox. | [`internal/engine`](internal/engine) |
 | Codex client | Run one ephemeral app-server turn and return the final text and any reaction request. | [`internal/codex`](internal/codex) |
 
@@ -113,6 +113,8 @@ The `companion-workspace` profile gives the shell network access, read access to
 The shell boundary does not control app-server network requests. Native live web search can send queries and turn context to OpenAI. Account-side apps and plugins can operate outside the shell sandbox if they do not require client approval. Use an account without those integrations if they must not be available.
 
 ## 8. Telegram output and delivery
+
+During a model step, the app sends a best-effort `sendChatAction` request at the start and every four seconds. Typing requests have a two-second timeout and bypass the outbox. The prompt asks the model to send one short commentary message when it expects the work to take time. For the active step, the engine queues that message in the outbox and lets the same turn continue. There is no timer for progress text. The update does not enter conversation history.
 
 The outbox is first-in, first-out. The delivery loop splits messages at up to 4,096 UTF-16 code units without splitting a Unicode code point. It sends plain text with link previews disabled. It sends each reaction in one `setMessageReaction` request.
 

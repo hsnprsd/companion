@@ -13,7 +13,7 @@ import (
 
 type runnerFunc func(context.Context, string) (string, error)
 
-func (r runnerFunc) Run(ctx context.Context, prompt string, _ bool) (string, string, error) {
+func (r runnerFunc) Run(ctx context.Context, prompt string, _ bool, _ func(string) error) (string, string, error) {
 	text, err := r(ctx, prompt)
 	return text, "", err
 }
@@ -22,7 +22,7 @@ var echoRunner runnerFunc = func(context.Context, string) (string, error) { retu
 
 func openEngine(t *testing.T, dir string, r Runner) *Engine {
 	t.Helper()
-	e, err := Open(dir, r)
+	e, err := Open(dir, r, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func receive[T any](t *testing.T, ch <-chan T) T {
 func TestAcceptCursorAndStateLock(t *testing.T) {
 	dir := t.TempDir()
 	e := openEngine(t, dir, echoRunner)
-	if other, err := Open(dir, echoRunner); err == nil {
+	if other, err := Open(dir, echoRunner, nil); err == nil {
 		closeEngine(t, other)
 		t.Fatal("second engine opened the same directory")
 	}
@@ -157,7 +157,7 @@ func TestOpenRejectsOldSnapshotWithoutChangingIt(t *testing.T) {
 	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if e, err := Open(dir, echoRunner); err == nil {
+	if e, err := Open(dir, echoRunner, nil); err == nil {
 		closeEngine(t, e)
 		t.Fatal("opened a version 2 snapshot")
 	} else if !strings.Contains(err.Error(), "unsupported engine state version 2") {

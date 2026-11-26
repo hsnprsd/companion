@@ -114,6 +114,27 @@ func TestSendPlainText(t *testing.T) {
 	}
 }
 
+func TestTyping(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/bot"+testToken+"/sendChatAction" {
+			t.Error("wrong Telegram endpoint")
+		}
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+		}
+		want := map[string]any{"chat_id": float64(42), "action": "typing"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("typing request = %#v, want %#v", got, want)
+		}
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
+	}))
+	defer server.Close()
+	if err := New(server.URL, testToken, 42).Typing(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReact(t *testing.T) {
 	for _, result := range []string{"true", "false", "null", `{"message_id":57}`} {
 		t.Run(result, func(t *testing.T) {

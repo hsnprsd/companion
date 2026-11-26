@@ -2,6 +2,8 @@
 
 Use Codex CLI `0.172.0`. The client opens one WebSocket and starts one ephemeral thread per `Run`. It checks the OpenAI model catalog, the selected thread model, and model-change notifications. It does not retry a turn or select a fallback model. For a turn with a Telegram message target, the client registers `telegram_react`. It accepts one supported emoji, not a chat or message ID. The client verifies the thread and turn IDs before it accepts the call. It returns the emoji to the engine only after the turn succeeds. It rejects other server requests, including requests for more permissions.
 
+Forward only the first non-blank, completed `agentMessage` with phase `commentary` from the active thread and turn, before the final answer. Do not forward message fragments or commentary found only in the completed turn snapshot. Do not use commentary as the final answer.
+
 Require an exact match for the thinking level in the selected model's `supportedReasoningEfforts` list. If no option matches, return an error before creating a thread. Otherwise, send the value as `effort` in `turn/start`. Companion uses `medium` when `thinking-level` is absent. If `thinking-level` is `null`, skip the check and omit `effort`.
 
 ## Deploy

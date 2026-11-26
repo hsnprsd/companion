@@ -39,6 +39,7 @@ type transcript struct {
 	Offset    int64    `json:"offset"`
 	Messages  []string `json:"messages"`
 	Reactions []string `json:"reactions"`
+	Actions   []string `json:"actions"`
 	Turns     []string `json:"turns"`
 	Problems  []string `json:"problems"`
 }
@@ -64,6 +65,7 @@ func run(args []string) error {
 		mux.HandleFunc("POST "+botPath+"getUpdates", f.poll)
 		mux.HandleFunc("POST "+botPath+"sendMessage", f.message)
 		mux.HandleFunc("POST "+botPath+"setMessageReaction", f.reaction)
+		mux.HandleFunc("POST "+botPath+"sendChatAction", f.action)
 		mux.HandleFunc("POST /updates", f.enqueue)
 		mux.HandleFunc("GET /status", f.status)
 		if args[0] == "serve" {
@@ -112,7 +114,7 @@ func run(args []string) error {
 		case "count", "wait":
 			if (args[0] == "count" && len(args) == 3) || (args[0] == "wait" && len(args) == 4) {
 				kind, fragment := args[1], args[2]
-				if kind != "messages" && kind != "reactions" && kind != "turns" {
+				if kind != "messages" && kind != "reactions" && kind != "actions" && kind != "turns" {
 					return fmt.Errorf("unknown transcript field: %s", kind)
 				}
 				if args[0] == "count" {
@@ -237,6 +239,22 @@ func (f *fixture) reaction(w http.ResponseWriter, r *http.Request) {
 	respond(w, map[string]any{"ok": true, "result": true})
 }
 
+func (f *fixture) action(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Chat   int64  `json:"chat_id"`
+		Action string `json:"action"`
+	}
+	if err := decode(r, &req); err != nil || req.Chat != chatID || req.Action != "typing" {
+		f.problem("invalid sendChatAction request")
+		http.Error(w, "invalid sendChatAction", http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.Actions = append(f.Actions, req.Action)
+	f.mu.Unlock()
+	respond(w, map[string]any{"ok": true, "result": true})
+}
+
 func (f *fixture) problem(format string, args ...any) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -269,6 +287,8 @@ func (st transcript) count(kind, fragment string) int {
 		list = st.Messages
 	case "reactions":
 		list = st.Reactions
+	case "actions":
+		list = st.Actions
 	case "turns":
 		list = st.Turns
 	}

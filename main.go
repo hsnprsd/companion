@@ -29,13 +29,14 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	app, err := engine.Open(cfg.StateDir, codex.Client{URL: cfg.CodexURL, Model: cfg.Model, ThinkingLevel: cfg.ThinkingLevel})
+	bot := telegram.New(cfg.TelegramURL, cfg.Token, cfg.ChatID)
+	runner := codex.Client{URL: cfg.CodexURL, Model: cfg.Model, ThinkingLevel: cfg.ThinkingLevel}
+	app, err := engine.Open(cfg.StateDir, runner, bot.Typing)
 	if err != nil {
 		return fmt.Errorf("open chat state: %w", err)
 	}
 	defer app.Close()
 
-	bot := telegram.New(cfg.TelegramURL, cfg.Token, cfg.ChatID)
 	return supervise(ctx,
 		app.Work,
 		func(ctx context.Context) error { return app.Deliver(ctx, bot.Send, bot.React) },

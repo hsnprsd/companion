@@ -106,4 +106,18 @@ fx wait reactions "$reaction_id:👍" 1
 count_is messages 'NO_REPLY' 0
 count_is reactions '' 2
 
+printf '%s\n' 'Check status, typing, and the progress reply during slow work.'
+typing_before=$(fx count actions typing)
+progress='I will inspect the fixture files.'
+send 'slow-fixture'
+wait_message "$progress"
+send '/status'
+wait_message 'Companion is working on a request.' 2
+fx wait actions typing "$((typing_before + 2))"
+wait_message 'fixture full answer'
+count_is messages "$progress" 1
+count_is turns 'slow-fixture' 1
+send '/status'
+wait_message 'Companion is idle.' 2
+
 printf '%s\n' 'Docker integration passed.'

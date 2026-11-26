@@ -57,13 +57,18 @@ func testRunner(t *testing.T) (Client, <-chan *websocket.Conn) {
 
 func launch(t *testing.T, client Client, connections <-chan *websocket.Conn, canReact bool) (*peer, <-chan outcome, context.CancelFunc) {
 	t.Helper()
+	return launchWithProgress(t, client, connections, canReact, nil)
+}
+
+func launchWithProgress(t *testing.T, client Client, connections <-chan *websocket.Conn, canReact bool, progress func(string) error) (*peer, <-chan outcome, context.CancelFunc) {
+	t.Helper()
 	peerCtx, cancelPeer := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancelPeer)
 	ctx, cancel := context.WithCancel(peerCtx)
 	t.Cleanup(cancel)
 	results := make(chan outcome, 1)
 	go func() {
-		text, emoji, err := client.Run(ctx, "fixture prompt", canReact)
+		text, emoji, err := client.Run(ctx, "fixture prompt", canReact, progress)
 		results <- outcome{text, emoji, err}
 	}()
 	select {
@@ -281,6 +286,51 @@ func TestRunProtocol(t *testing.T) {
 	done["threadId"] = "thread-2"
 	p.event("turn/completed", done)
 	check(t, waitResult(t, results), outcome{text: "A second answer"})
+}
+
+func TestRunForwardsCommentaryBeforeFinalAnswer(t *testing.T) {
+	for _, hasUpdate := range []bool{true, false} {
+		t.Run(map[bool]string{true: "updates", false: "already finished"}[hasUpdate], func(t *testing.T) {
+			client, conns := testRunner(t)
+			updates := make(chan string, 8)
+			p, results, _ := launchWithProgress(t, client, conns, false, func(text string) error {
+				updates <- text
+				return nil
+			})
+			p.init()
+			p.catalog()
+			p.thread("thread", false)
+			turn := p.turn("thread")
+			sendItem := func(thread, turn, kind, phase, text string) {
+				p.event("item/completed", params{"threadId": thread, "turnId": turn, "item": item(kind, phase, text)})
+			}
+			sendItem("foreign", "turn", "agentMessage", "commentary", "Foreign update")
+			sendItem("thread", "foreign", "agentMessage", "commentary", "Wrong turn")
+			sendItem("thread", "turn", "reasoning", "commentary", "Internal text")
+			sendItem("thread", "turn", "agentMessage", "commentary", "  ")
+			if hasUpdate {
+				// The server can emit a completed item before it replies to turn/start.
+				sendItem("thread", "turn", "agentMessage", "commentary", "I will check the workspace.")
+			}
+			p.reply(turn, turnResult("turn", "inProgress"))
+			if hasUpdate {
+				select {
+				case text := <-updates:
+					check(t, text, "I will check the workspace.")
+				case <-p.ctx.Done():
+					t.Fatal("no commentary before the end of the turn")
+				}
+				sendItem("thread", "turn", "agentMessage", "commentary", "A second update")
+			}
+			sendItem("thread", "turn", "agentMessage", "final_answer", "Full answer")
+			sendItem("thread", "turn", "agentMessage", "commentary", "Too late")
+			done := turnResult("turn", "completed", item("agentMessage", "commentary", "Snapshot only"))
+			done["threadId"] = "thread"
+			p.event("turn/completed", done)
+			check(t, waitResult(t, results), outcome{text: "Full answer"})
+			check(t, len(updates), 0)
+		})
+	}
 }
 
 func TestRunSendsConfiguredThinkingLevel(t *testing.T) {

@@ -132,7 +132,10 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		return fmt.Errorf("wrong turn model, thread, effort, or input: %s", m.Params)
 	}
 	var p prompt
-	_, data, _ := strings.Cut(run.Input[0].Text, "\n{")
+	instructions, data, _ := strings.Cut(run.Input[0].Text, "\n{")
+	if !strings.Contains(instructions, "one short plain-text commentary message") {
+		return fmt.Errorf("missing progress instructions in turn prompt")
+	}
 	if err := json.Unmarshal([]byte("{"+data), &p); err != nil {
 		return fmt.Errorf("invalid Companion turn context: %w", err)
 	}
@@ -155,6 +158,19 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 			return err
 		}
 		return reply(m, fields{})
+	}
+	if name == "slow-fixture" {
+		if err := wsjson.Write(ctx, ws, fields{"method": "item/completed", "params": fields{
+			"threadId": thread, "turnId": turn,
+			"item": fields{"type": "agentMessage", "phase": "commentary", "text": "I will inspect the fixture files."},
+		}}); err != nil {
+			return err
+		}
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	if name == "hello-fixture" || name == "reaction-only-fixture" {
 		if err := wsjson.Write(ctx, ws, fields{"id": 100, "method": "item/tool/call", "params": fields{
@@ -198,6 +214,8 @@ func scriptedAnswer(p prompt) (string, error) {
 		return "fixture note request", nil
 	case "restart-fixture":
 		return "fixture resumed result", nil
+	case "slow-fixture":
+		return "fixture full answer", nil
 	default:
 		return "", fmt.Errorf("unexpected user request: %q", name)
 	}
