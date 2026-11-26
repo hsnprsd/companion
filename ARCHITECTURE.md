@@ -29,7 +29,7 @@ flowchart LR
 
 [Compose](compose.yaml) runs two services with separate filesystems. The app joins the runner's network namespace to reach `ws://127.0.0.1:4500`. Neither service publishes a port. The runner joins a Docker bridge with egress, which also lets the app reach Telegram. If you replace the runner, recreate the app so that it joins the new network namespace.
 
-The [Dockerfile](Dockerfile) builds the Go `1.27.4` app and installs Codex CLI `0.172.0` and Bubblewrap in the runner. Both services run as UID/GID `1000:1000`, with read-only container roots, all Linux capabilities dropped, `no-new-privileges`, and no Docker socket. The runner uses the repository's [seccomp profile](docker/codex-seccomp.json) for Bubblewrap.
+The [Dockerfile](Dockerfile) builds the Go `1.27.4` app and installs Codex CLI `0.172.0` and Bubblewrap in the runner. Both services run as UID/GID `1000:1000`, with read-only container roots, all Linux capabilities dropped, `no-new-privileges`, and no Docker socket. The runner uses the repository's [seccomp profile](docker/codex-seccomp.json), based on [Moby profiles at `a0fa708`](https://github.com/moby/profiles/blob/a0fa70805f742f7da15b367770d802ea2a86c68b/seccomp/default.json). Its additions let Bubblewrap create nested namespaces and set up their mount tree. The runner does not use privileged mode or unconfined seccomp. See [the upstream license](docker/MOBY-LICENSE).
 
 | Data | Standard location | Access and lifetime |
 | --- | --- | --- |
@@ -40,7 +40,7 @@ The [Dockerfile](Dockerfile) builds the Go `1.27.4` app and installs Codex CLI `
 
 ## 2. Startup and process lifecycle
 
-1. Load `model`, `tg-bot-token`, and `tg-chat-id` from the JSON config. The app limits the config to 4 KiB, validates the model and token formats, and requires a positive chat ID. It checks endpoint schemes and rejects credentials, query strings, and fragments in the URLs. [README.md](README.md#application-settings) lists the environment variables.
+1. Load `model`, `tg-bot-token`, and `tg-chat-id` from the JSON config. The app limits the config to 4 KiB, validates the model and token formats, and requires a positive chat ID. It checks endpoint schemes and rejects credentials, query strings, and fragments in the URLs. See [Application settings](#application-settings) for the environment variables.
 2. Create the state directory if necessary, acquire an exclusive `flock` on `state.lock`, and load the snapshot. A second app cannot open the same state directory while this lock is held. The app does not contact Codex until a step needs a model.
 3. Start three loops. Telegram `Poll` accepts updates. Engine `Work` runs one model step at a time. Engine `Deliver` sends queued messages. The engine mutex serializes state changes. The loops do not hold it during network calls. Wake channels and timers let the loops wait for state changes or deadlines.
 
@@ -144,3 +144,12 @@ The app does not provide exactly-once execution for model turns, native tools, o
 - Stop both services before backing up state and workspace. Protect both backups as private data. `docker compose down` keeps named volumes. `docker compose down -v` removes app state and workspace but not the external sign-in volume.
 
 Run `go test -race ./...` for tests of configuration, Telegram HTTP behavior, scheduling, state, delivery, and the Codex protocol. Run [`tests/docker/run.sh`](tests/docker/run.sh) for the app image with fake Telegram and Codex peers. Run [`tests/docker/runner.sh`](tests/docker/runner.sh) for native file operations, workspace persistence, and shell boundary checks with real Codex and a local model fixture. Both Docker tests use disposable volumes and do not contact Telegram or OpenAI.
+
+## Application settings
+
+| Environment variable | Default outside Compose | Compose setting |
+| --- | --- | --- |
+| `COMPANION_CONFIG` | `companion.json` | `/etc/companion/companion.json`; change the host source with `COMPANION_CONFIG_SOURCE` |
+| `COMPANION_STATE_DIR` | `./state` | `/app/state` |
+| `COMPANION_CODEX_URL` | `ws://127.0.0.1:4500` | Same |
+| `COMPANION_TELEGRAM_URL` | `https://api.telegram.org` | Same; override only for a trusted fixture |

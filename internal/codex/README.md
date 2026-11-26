@@ -11,6 +11,25 @@ Use Codex CLI `0.172.0`. The client opens one WebSocket and starts one ephemeral
 
 Compose defines the `companion-workspace` profile. It gives the shell network access, read access to minimal runtime files, and write access to `/workspace`. The profile does not expose the sign-in volume directly. Codex treats the workspace as an untrusted project and keeps its default protections for project metadata. Keep app files and secrets out of the workspace and system read paths.
 
+### Codex sign-in
+
+Compose uses the external volume `companion-codex-auth`. Keep only Codex sign-in files in it. If the runner cannot use the volume, check ownership and modes without reading the files. First confirm that the volume exists:
+
+```sh
+docker volume inspect --format '{{.Name}} {{.Driver}}' companion-codex-auth
+```
+
+If the volume exists, run:
+
+```sh
+docker run --rm --network none --user 0:0 \
+  --mount type=volume,source=companion-codex-auth,target=/inspect,readonly,volume-nocopy \
+  --entrypoint stat debian:bookworm-slim \
+  -c '%n uid=%u gid=%g mode=%a' /inspect /inspect/auth.json
+```
+
+The runner uses UID/GID `1000:1000`. The expected modes are `700` for the directory and `600` for `auth.json`. If the volume is missing or the owner does not match, use a verified Codex sign-in procedure for the runner identity. Do not copy or expose credentials or recursively change ownership or modes on an existing sign-in volume.
+
 ## Limits
 
 - Workspace changes survive runner replacement. A new thread does not clear the workspace. Project instructions there can affect model behavior but do not set the shell permission profile.
