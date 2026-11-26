@@ -151,7 +151,7 @@ func threadResult(id string) params {
 		"cwd": "/workspace", "model": testModel, "modelProvider": "openai", "approvalPolicy": "never",
 		"activePermissionProfile": params{"id": "companion-workspace", "extends": nil},
 		"sandbox": params{
-			"type": "workspaceWrite", "writableRoots": []string{}, "networkAccess": false,
+			"type": "workspaceWrite", "writableRoots": []string{}, "networkAccess": true,
 			"excludeTmpdirEnvVar": true, "excludeSlashTmp": true,
 		},
 	}
@@ -289,7 +289,8 @@ func TestRunRejectsUnexpectedThreadSettings(t *testing.T) {
 	}{
 		{"model", func(p params) { p["model"] = "fallback" }, "did not select configured model"},
 		{"thread model", func(p params) { p["thread"].(params)["model"] = "fallback" }, "did not select configured model"},
-		{"network", func(p params) { p["sandbox"].(params)["networkAccess"] = true }, "did not confirm restricted"},
+		{"network disabled", func(p params) { p["sandbox"].(params)["networkAccess"] = false }, "did not confirm restricted"},
+		{"network missing", func(p params) { delete(p["sandbox"].(params), "networkAccess") }, "did not confirm restricted"},
 		{"write roots", func(p params) { p["sandbox"].(params)["writableRoots"] = []string{"/app"} }, "did not confirm restricted"},
 		{"approval", func(p params) { p["approvalPolicy"] = "on-request" }, "did not confirm restricted"},
 		{"persistence", func(p params) { p["thread"].(params)["ephemeral"] = false }, "did not confirm restricted"},

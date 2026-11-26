@@ -98,7 +98,7 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		"model": model, "modelProvider": "openai", "approvalPolicy": "never", "cwd": "/workspace",
 		"activePermissionProfile": fields{"id": "companion-workspace", "extends": nil},
 		"sandbox": fields{
-			"type": "workspaceWrite", "networkAccess": false, "writableRoots": []string{},
+			"type": "workspaceWrite", "networkAccess": true, "writableRoots": []string{},
 			"excludeSlashTmp": true, "excludeTmpdirEnvVar": true,
 		},
 	}); err != nil {

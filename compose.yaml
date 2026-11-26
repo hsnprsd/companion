@@ -3,8 +3,8 @@ services:
     build:
       context: .
       target: app
-    # Codex requires authentication on non-loopback listeners. Share only the
-    # network namespace so the app can reach the runner's loopback WebSocket.
+    # Share the network namespace so the app can reach the runner's loopback
+    # WebSocket. Agent shell commands can also reach this listener.
     network_mode: service:codex
     depends_on:
       - codex
@@ -40,7 +40,7 @@ services:
       - -c
       - 'default_permissions="companion-workspace"'
       - -c
-      - 'permissions.companion-workspace={filesystem={":minimal"="read","/workspace"="write"},network={enabled=false}}'
+      - 'permissions.companion-workspace={filesystem={":minimal"="read","/workspace"="write"},network={enabled=true}}'
       - -c
       - 'projects."/workspace".trust_level="untrusted"'
       - -c

@@ -49,4 +49,4 @@ Verify these capabilities together in Docker. A single sample task does not defi
 
 ## First release access
 
-Use native tools in the runner's workspace. Do not connect host directories, sockets, or other services to the agent by default. Use `/notes`, `/note`, and `/forget` to manage the notebook in Telegram.
+Use native tools in the runner's workspace. Let shell commands make direct network requests. Do not mount host directories or sockets for the agent by default. Use `/notes`, `/note`, and `/forget` to manage the notebook in Telegram.

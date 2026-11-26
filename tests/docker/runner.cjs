@@ -23,7 +23,7 @@ const checks = [
   `for root in /proc/[0-9]*/root; do test ! -r "$root${signIn}"; done`,
   'test ! -e /app/state && test ! -e /etc/companion/companion.json || exit 1',
   'if (echo fail > /tmp/workspace-probe); then exit 1; fi',
-  'node -e \'const s=require("node:net").connect(3900,"127.0.0.1");s.on("error",e=>process.exit(e.code==="EPERM"?0:1));s.on("connect",()=>process.exit(1));setTimeout(()=>process.exit(1),1000)\'',
+  'node -e \'fetch("http://probe-http:3900", {signal: AbortSignal.timeout(2000)}).then(async res => require("node:assert/strict").equal(await res.text(), "probe network"))\'',
   ...(phase === 'create' ? [
     'mkdir probe-files',
     'printf original > probe-files/draft',
@@ -54,7 +54,7 @@ const api = http.createServer(async (req, res) => {
   let item;
   const id = `response-${++responses}`;
   if (responses === 1) {
-    const script = `if (typeof tools.exec_command === 'function') text(await tools.exec_command({cmd:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},yield_time_ms:1000})); else text(await tools.shell_command({command:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},timeout_ms:1000}));`;
+    const script = `if (typeof tools.exec_command === 'function') text(await tools.exec_command({cmd:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},yield_time_ms:3000})); else text(await tools.shell_command({command:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},timeout_ms:3000}));`;
     item = {type: 'custom_tool_call', namespace: 'functions', name: 'exec', call_id: 'probe-call', input: script};
   } else {
     assert.equal(responses, 2);
@@ -114,7 +114,7 @@ const api = http.createServer(async (req, res) => {
       config: {web_search: 'live', features: {standalone_web_search: true}}});
     assert.equal(thread.activePermissionProfile.id, profile);
     assert.equal(thread.sandbox.type, 'workspaceWrite');
-    assert.equal(thread.sandbox.networkAccess, false);
+    assert.equal(thread.sandbox.networkAccess, true);
     assert.equal(thread.sandbox.excludeSlashTmp, true);
     assert.equal(thread.sandbox.excludeTmpdirEnvVar, true);
     await rpc('turn/start', {...restrictions, threadId: thread.thread.id, input: [{type: 'text', text: 'Run the workspace probe.', text_elements: []}]});

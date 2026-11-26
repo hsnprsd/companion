@@ -108,7 +108,7 @@ func (c Client) Run(ctx context.Context, prompt string) (string, error) {
 		started.Thread.Environments[0].ID != "local" || started.Thread.Environments[0].CWD != workspaceDir ||
 		len(started.Thread.Environments[0].Roots) != 1 || started.Thread.Environments[0].Roots[0] != workspaceDir ||
 		started.CWD != workspaceDir || started.ApprovalPolicy != "never" || started.Profile.ID != permissionProfile || started.Profile.Extends != nil ||
-		started.Sandbox.Type != "workspaceWrite" || started.Sandbox.NetworkAccess == nil || *started.Sandbox.NetworkAccess ||
+		started.Sandbox.Type != "workspaceWrite" || started.Sandbox.NetworkAccess == nil || !*started.Sandbox.NetworkAccess ||
 		!started.Sandbox.ExcludeSlashTmp || !started.Sandbox.ExcludeTmpdirEnvVar ||
 		(len(started.Sandbox.WritableRoots) != 0 && (len(started.Sandbox.WritableRoots) != 1 || started.Sandbox.WritableRoots[0] != workspaceDir)) {
 		return "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")

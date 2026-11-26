@@ -1255,12 +1255,12 @@
       "args": [
         {
           "index": 0,
-          "value": 2114060288,
-          "valueTwo": 2013396992,
+          "value": 1040318464,
+          "valueTwo": 939655168,
           "op": "SCMP_CMP_MASKED_EQ"
         }
       ],
-      "comment": "Codex bubblewrap: nested user, mount, IPC, PID and network namespaces.",
+      "comment": "Codex bubblewrap: nested user, mount, IPC and PID namespaces. Allow CLONE_NEWNET but do not require it.",
       "excludes": {
         "arches": [
           "s390",
@@ -1276,12 +1276,12 @@
       "args": [
         {
           "index": 1,
-          "value": 2114060288,
-          "valueTwo": 2013396992,
+          "value": 1040318464,
+          "valueTwo": 939655168,
           "op": "SCMP_CMP_MASKED_EQ"
         }
       ],
-      "comment": "Same nested namespaces; clone flags are the second argument on s390.",
+      "comment": "Same nested namespaces with optional CLONE_NEWNET; clone flags are the second argument on s390.",
       "includes": {
         "arches": [
           "s390",

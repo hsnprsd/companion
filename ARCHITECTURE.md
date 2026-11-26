@@ -16,6 +16,7 @@ flowchart LR
     Runner <--> Auth[(Codex sign-in volume)]
     Runner --> Shell[Sandboxed shell]
     Shell <--> Workspace[(Workspace volume)]
+    Shell -->|Direct network requests| Network[Network]
     Runner <-->|Model requests and native search| OpenAI[OpenAI]
 ```
 
@@ -100,7 +101,7 @@ Each prompt includes the current request, task kind, the notebook, the last task
 
 ## 6. Codex step and protocol boundary
 
-The [Codex client](internal/codex/client.go) opens one WebSocket per step. It sends `initialize` and `initialized`, checks Linux and `CODEX_HOME`, and looks for the exact configured model in the OpenAI `model/list` catalog. It requests a fresh ephemeral `thread/start` with provider fallback disabled. It checks the reported model, local environment, workspace roots, permission profile, approval policy, and lack of shell network access before sending `turn/start`.
+The [Codex client](internal/codex/client.go) opens one WebSocket per step. It sends `initialize` and `initialized`, checks Linux and `CODEX_HOME`, and looks for the exact configured model in the OpenAI `model/list` catalog. It requests a fresh ephemeral `thread/start` with provider fallback disabled. It checks the reported model, local environment, workspace roots, permission profile, approval policy, and that the shell has network access before sending `turn/start`.
 
 The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time, buffers a limited set of early turn notifications until it knows the turn ID, and rejects server requests. It declares no dynamic tools. App-server runs native tools directly. The client returns the final assistant text, or the last assistant message if app-server did not mark a final answer. It does not stream partial text to Telegram.
 
@@ -110,7 +111,7 @@ The client rejects model changes and reroutes. It does not retry turns or select
 
 The agent's working directory and shell home are `/workspace`. It can use native tools to create, edit, rename, and delete its files. There is no file broker, Telegram file approval, or external alias. The app does not keep a log of each file operation.
 
-The `companion-workspace` profile gives the shell read access to minimal runtime files and write access to `/workspace`. It does not give the shell network access, access to the sign-in files, or permission expansion. The shell does not inherit the app-server environment. Codex treats the workspace project as untrusted. Keep app credentials, app state, host directories, and sockets out of the workspace. Back up files that the agent must not lose.
+The `companion-workspace` profile gives the shell network access, read access to minimal runtime files, and write access to `/workspace`. The profile does not expose the sign-in files directly, and the shell does not inherit the app-server environment. Network access lets the shell reach the unauthenticated loopback WebSocket and send requests directly to Codex without Companion’s checks. Codex treats the workspace project as untrusted. Keep app credentials, app state, host directories, and sockets out of the workspace. Back up files that the agent must not lose.
 
 The shell boundary does not control app-server network requests. Native live web search can send queries and turn context to OpenAI. Account-side apps and plugins can operate outside the shell sandbox if they do not require client approval. Use an account without those integrations if they must not be available.
 

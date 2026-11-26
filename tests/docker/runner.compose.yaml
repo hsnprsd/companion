@@ -8,6 +8,16 @@ services:
         target: /home/node/.codex
         volume: {nocopy: false}
 
+  probe-http:
+    image: node:24-bookworm-slim
+    command: [node, -e, 'require("node:http").createServer((_req, res) => res.end("probe network")).listen(3900, "0.0.0.0")']
+    healthcheck:
+      test: [CMD, node, -e, 'fetch("http://127.0.0.1:3900").then(res => process.exit(res.ok ? 0 : 1))']
+      interval: 1s
+      timeout: 2s
+      retries: 10
+    networks: [egress]
+
 volumes:
   codex-auth:
     external: false

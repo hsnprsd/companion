@@ -21,5 +21,6 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 compose build codex
+compose up -d --wait probe-http
 compose run --rm --no-deps -T -e PROBE_PHASE=create codex
 compose run --rm --no-deps -T -e PROBE_PHASE=verify codex
