@@ -44,4 +44,4 @@ The runner uses UID/GID `1000:1000`. The expected modes are `700` for the direct
 
 ## Verify
 
-Run `go test -race ./internal/codex` for the WebSocket contract. Run [`tests/docker/runner.sh`](../../tests/docker/runner.sh) from the repository root to test real Codex with a local model fixture. The probe checks native file operations without approvals, workspace persistence across runner replacement, HTTP access over the Docker bridge, and that the shell cannot directly read sign-in files. It uses disposable volumes. It does not contact OpenAI or check production account access.
+Run `go test -race ./internal/codex` for the WebSocket contract. Run [`tests/runner.sh`](../../tests/runner.sh) from the repository root to test real Codex with a local model fixture. The probe checks native file operations without approvals, workspace persistence across runner replacement, HTTP access over the Docker bridge, and that the shell cannot directly read sign-in files. It uses disposable volumes. It does not contact OpenAI or check production account access.

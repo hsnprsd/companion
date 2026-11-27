@@ -1,13 +1,13 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 export RUNNER_PROBE_PROJECT=companion-runner-probe-$$
 
 compose() {
     docker compose --env-file /dev/null -p "$RUNNER_PROBE_PROJECT" \
-        -f compose.yaml -f tests/docker/runner.compose.yaml "$@"
+        -f compose.yaml -f tests/compose.runner.yaml "$@"
 }
 
 cleanup() {

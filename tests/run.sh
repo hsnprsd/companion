@@ -1,14 +1,14 @@
 #!/bin/sh
 set -eu
 
-root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
 export FIXTURE_DIR
 FIXTURE_DIR=$(mktemp -d)
 project=companion-integration-$$
 
 compose() {
-    docker compose --env-file /dev/null -p "$project" -f tests/docker/compose.yaml "$@"
+    docker compose --env-file /dev/null -p "$project" -f tests/compose.yaml "$@"
 }
 
 cleanup() {

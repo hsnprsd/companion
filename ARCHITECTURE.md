@@ -138,7 +138,7 @@ The app does not provide exactly-once execution for model turns, native tools, o
 - Each commit rewrites the snapshot. The app removes finished requests from the pending queue. It does not prune history or delivery incidents. It sends up to 20 conversation records per prompt.
 - Stop both services before backing up state and workspace. Protect both backups as private data. `docker compose down` keeps named volumes. `docker compose down -v` removes app state and workspace but not the external sign-in volume.
 
-Run `go test -race ./...` for tests of configuration, Telegram HTTP behavior, request queues, state, delivery, and the Codex protocol. Run [`tests/docker/run.sh`](tests/docker/run.sh) for the app image with fake Telegram and Codex peers. Run [`tests/docker/runner.sh`](tests/docker/runner.sh) for native file operations, workspace persistence, and shell boundary checks with real Codex and a local model fixture. Both Docker tests use disposable volumes and do not contact Telegram or OpenAI.
+Run `go test -race ./...` for tests of configuration, Telegram HTTP behavior, request queues, state, delivery, and the Codex protocol. Run [`tests/run.sh`](tests/run.sh) for the app image with fake Telegram and Codex peers. Run [`tests/runner.sh`](tests/runner.sh) for native file operations, workspace persistence, and shell boundary checks with real Codex and a local model fixture. Both Docker tests use disposable volumes and do not contact Telegram or OpenAI.
 
 ## Application settings
 

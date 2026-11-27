@@ -21,17 +21,6 @@ WORKDIR /workspace
 USER 1000:1000
 ENTRYPOINT ["codex", "app-server"]
 
-FROM go-base AS fixture-build
-COPY go.* ./
-COPY tests/docker/fixture/ ./tests/docker/fixture/
-RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -o /out/fixture ./tests/docker/fixture
-
-FROM debian:bookworm-slim AS fixture
-COPY --from=fixture-build /out/fixture /usr/local/bin/fixture
-USER 1000:1000
-ENTRYPOINT ["/usr/local/bin/fixture"]
-
 FROM debian:bookworm-slim AS app
 COPY --from=go-base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=app-build /out/companion /usr/local/bin/companion

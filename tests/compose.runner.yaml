@@ -2,7 +2,7 @@ services:
   codex:
     entrypoint: [node, /runner-probe.cjs]
     volumes:
-      - ./tests/docker/runner.cjs:/runner-probe.cjs:ro,Z
+      - ./tests/runner.cjs:/runner-probe.cjs:ro,Z
       - type: volume
         source: codex-auth
         target: /home/node/.codex
@@ -21,7 +21,7 @@ services:
 volumes:
   codex-auth:
     external: false
-    name: ${RUNNER_PROBE_PROJECT:?Run tests/docker/runner.sh}-auth
+    name: ${RUNNER_PROBE_PROJECT:?Run tests/runner.sh}-auth
 
 networks:
   egress:

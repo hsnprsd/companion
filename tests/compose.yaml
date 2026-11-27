@@ -1,7 +1,7 @@
 services:
   app:
     build:
-      context: ../..
+      context: ..
       target: app
     network_mode: service:fixture
     depends_on:
@@ -19,12 +19,12 @@ services:
       COMPANION_TELEGRAM_URL: http://127.0.0.1:8080
     volumes:
       - state:/app/state
-      - ${FIXTURE_DIR:?Run tests/docker/run.sh}/companion.json:/etc/companion/companion.json:ro,Z
+      - ${FIXTURE_DIR:?Run tests/run.sh}/companion.json:/etc/companion/companion.json:ro,Z
 
   fixture:
     build:
-      context: ../..
-      target: fixture
+      context: ..
+      dockerfile: tests/Dockerfile
     command: [serve]
     healthcheck:
       test: [CMD, /usr/local/bin/fixture, status]

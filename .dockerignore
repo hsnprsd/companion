@@ -7,9 +7,7 @@
 !internal/**/
 !internal/**/*.go
 !tests/
-!tests/docker/
-!tests/docker/fixture/
-!tests/docker/fixture/*.go
+!tests/*.go
 **/.bot-token
 **/tg-bot-token
 **/.tg-chat-id
