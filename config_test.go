@@ -33,6 +33,29 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRequiresTelegramSettings(t *testing.T) {
+	const base = `{"model":"gpt-example"`
+	const token = `,"tg-bot-token":"123456:example_token_not_a_real_credential"`
+	const chat = `,"tg-chat-id":123456`
+	for _, tc := range []struct {
+		name, fields, want string
+	}{
+		{"omitted token", chat, "tg-bot-token is required"},
+		{"null token", `,"tg-bot-token":null` + chat, "tg-bot-token is required"},
+		{"empty token", `,"tg-bot-token":""` + chat, "invalid tg-bot-token"},
+		{"omitted chat ID", token, "tg-chat-id is required"},
+		{"null chat ID", token + `,"tg-chat-id":null`, "tg-chat-id is required"},
+		{"zero chat ID", token + `,"tg-chat-id":0`, "tg-chat-id must be a positive integer for a private chat"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setConfigFile(t, base+tc.fields+`}`)
+			if _, err := loadConfig(); err == nil || err.Error() != tc.want {
+				t.Errorf("got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadThinkingLevel(t *testing.T) {
 	const base = `{"model":"gpt-example","tg-bot-token":"123456:example_token_not_a_real_credential","tg-chat-id":123456`
 	for _, tc := range []struct {

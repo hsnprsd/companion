@@ -39,8 +39,8 @@ func loadConfig() (config, error) {
 	file := struct {
 		Model         string  `json:"model"`
 		ThinkingLevel *string `json:"thinking-level"`
-		Token         string  `json:"tg-bot-token"`
-		ChatID        int64   `json:"tg-chat-id"`
+		Token         *string `json:"tg-bot-token"`
+		ChatID        *int64  `json:"tg-chat-id"`
 	}{ThinkingLevel: new("medium")} // An explicit JSON null clears this default.
 	if json.Unmarshal(data, &file) != nil {
 		return config{}, errors.New("invalid Companion configuration; see companion.example.json")
@@ -55,13 +55,19 @@ func loadConfig() (config, error) {
 		}
 		c.ThinkingLevel = level
 	}
-	if !botTokenPattern.MatchString(file.Token) {
+	if file.Token == nil {
+		return config{}, errors.New("tg-bot-token is required")
+	}
+	if !botTokenPattern.MatchString(*file.Token) {
 		return config{}, errors.New("invalid tg-bot-token")
 	}
-	if file.ChatID <= 0 {
+	if file.ChatID == nil {
+		return config{}, errors.New("tg-chat-id is required")
+	}
+	if *file.ChatID <= 0 {
 		return config{}, errors.New("tg-chat-id must be a positive integer for a private chat")
 	}
-	c.Model, c.Token, c.ChatID = file.Model, file.Token, file.ChatID
+	c.Model, c.Token, c.ChatID = file.Model, *file.Token, *file.ChatID
 
 	if !validEndpoint(c.TelegramURL, "https", "http") {
 		return config{}, errors.New("COMPANION_TELEGRAM_URL must be an HTTP(S) base URL without credentials, query or fragment")

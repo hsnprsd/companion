@@ -31,7 +31,7 @@ Use Docker Engine with Compose v2 or later on a Linux host or Docker VM that per
    chmod 600 companion.json
    ```
 
-   Edit `companion.json`. Set `model` to the exact Codex model ID available to your subscription, `tg-bot-token` to your bot token, and `tg-chat-id` to your chat ID as a JSON number. Companion does not select a different model if yours is unavailable. Keep the file out of Git and shared directories. Make sure the app container's user (`1000:1000`, or the mapped host identity) can read it without making it public.
+   Edit `companion.json`. Set `model` to the exact Codex model ID available to your subscription, `tg-bot-token` to your bot token, and `tg-chat-id` to your private chat ID as a positive JSON integer. Both Telegram settings are required. Companion does not select a different model if yours is unavailable. Keep the file out of Git and shared directories. Make sure the app container's user (`1000:1000`, or the mapped host identity) can read it without making it public.
 3. Make sure the Docker volume `companion-codex-auth` contains a valid Codex sign-in. Use this volume for sign-in only. If the volume is missing or Companion cannot use it, see the [Codex sign-in requirements](internal/codex/README.md#codex-sign-in).
 4. Start Companion, then send `/status` to the bot to check that it replies:
 
