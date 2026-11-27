@@ -9,10 +9,10 @@ import (
 
 func TestPendingRequestsSurviveRestartInOrder(t *testing.T) {
 	started := make(chan struct{})
-	r := runnerFunc(func(ctx context.Context, _ string) (string, error) {
+	r := runnerFunc(func(ctx context.Context, _ string, sendMessage func(string) error) error {
 		close(started)
 		<-ctx.Done()
-		return "discard this reply", nil
+		return sendMessage("discard this reply")
 	})
 	dir := t.TempDir()
 	e := openEngine(t, dir, r)
@@ -29,7 +29,7 @@ func TestPendingRequestsSurviveRestartInOrder(t *testing.T) {
 	}
 	closeEngine(t, e)
 	runs := 0
-	e = openEngine(t, dir, runnerFunc(func(_ context.Context, prompt string) (string, error) {
+	e = openEngine(t, dir, runnerFunc(func(_ context.Context, prompt string, sendMessage func(string) error) error {
 		var input struct {
 			Request string `json:"user_request"`
 			History []turn `json:"conversation_history"`
@@ -46,7 +46,7 @@ func TestPendingRequestsSurviveRestartInOrder(t *testing.T) {
 			}
 		}
 		runs++
-		return "reply to " + input.Request, nil
+		return sendMessage("reply to " + input.Request)
 	}))
 	runJob(t, e)
 	runJob(t, e)
@@ -75,12 +75,12 @@ func TestActiveRequestRemainsOnDiskBeforeModelCompletes(t *testing.T) {
 }
 
 func TestTimedOutRequestDoesNotBlockQueue(t *testing.T) {
-	r := runnerFunc(func(ctx context.Context, prompt string) (string, error) {
+	r := runnerFunc(func(ctx context.Context, prompt string, sendMessage func(string) error) error {
 		if strings.Contains(prompt, `"user_request":"slow"`) {
 			<-ctx.Done()
-			return "late reply", nil
+			return sendMessage("late reply")
 		}
-		return "next reply", nil
+		return sendMessage("next reply")
 	})
 	e := openEngine(t, t.TempDir(), r)
 	e.stepTimeout = time.Millisecond

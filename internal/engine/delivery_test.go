@@ -43,6 +43,7 @@ func TestDefiniteRejectionRetriesAfterRestart(t *testing.T) {
 	e.now = func() time.Time { return now }
 	acceptUpdate(t, e, 1, "remember this")
 	runJob(t, e)
+	acceptUpdate(t, e, 2, "/status")
 	part, _ := nextSend(t, e)
 	if s := stored(t, e); part == "" || !s.Outbox[0].Sending {
 		t.Fatal("send started without durable outbox intent")
@@ -58,8 +59,21 @@ func TestDefiniteRejectionRetriesAfterRestart(t *testing.T) {
 	if got, _ := nextSend(t, e); got != part {
 		t.Fatalf("retried %q, want %q", got, part)
 	}
+	recordSend(t, e, part, sendError{})
+	if got, delay := nextSend(t, e); got != "" || delay != 2*time.Second {
+		t.Fatalf("second retry: message %q, delay %s", got, delay)
+	}
+	now = now.Add(2 * time.Second)
+	if got, _ := nextSend(t, e); got != part {
+		t.Fatalf("retried %q, want %q", got, part)
+	}
 	recordSend(t, e, part, nil)
-	if s := stored(t, e); len(s.Outbox) != 0 || s.Offset != 2 || len(s.Incidents) != 0 {
+	next, _ := nextSend(t, e)
+	if next != "Companion is idle." {
+		t.Fatalf("sent %q after the retried message", next)
+	}
+	recordSend(t, e, next, nil)
+	if s := stored(t, e); len(s.Outbox) != 0 || s.Offset != 3 || len(s.Incidents) != 0 {
 		t.Fatalf("unexpected state after confirmed delivery: %+v", s)
 	}
 }
@@ -117,7 +131,9 @@ func TestPermanentRejectionDoesNotBlockOutbox(t *testing.T) {
 
 func TestUTF16ChunksResumeWithoutReplayingConfirmedPart(t *testing.T) {
 	message := "a" + strings.Repeat("😀", 2048) + "\nremaining text"
-	r := runnerFunc(func(context.Context, string) (string, error) { return message, nil })
+	r := runnerFunc(func(_ context.Context, _ string, sendMessage func(string) error) error {
+		return sendMessage(message)
+	})
 	dir := t.TempDir()
 	e := openEngine(t, dir, r)
 	acceptUpdate(t, e, 1, "Please talk")

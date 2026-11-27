@@ -96,7 +96,7 @@ wait_message 'Send a message to ask a question, request work, or manage notes.'
 count_is turns 'Remember that I prefer short summaries.' 1
 count_is messages 'fixture resumed result' 1
 
-printf '%s\n' 'Check status and the progress reply during slow work.'
+printf '%s\n' 'Check Telegram messages and status during slow work.'
 progress='I will inspect the fixture files.'
 send 'slow-fixture'
 wait_message "$progress"
@@ -107,5 +107,6 @@ count_is messages "$progress" 1
 count_is turns 'slow-fixture' 1
 send '/status'
 wait_message 'Companion is idle.' 2
+count_is messages 'fixture full answer' 1
 
 printf '%s\n' 'Docker integration passed.'

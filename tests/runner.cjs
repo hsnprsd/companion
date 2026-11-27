@@ -10,6 +10,8 @@ const model = 'gpt-6-luna';
 const cwd = '/workspace';
 const profile = 'companion-workspace';
 const marker = 'runner-probe-marker';
+const messageText = 'Workspace checked.';
+const inputSchema = {type: 'object', properties: {text: {type: 'string'}}, required: ['text'], additionalProperties: false};
 const signIn = '/home/node/.codex/auth.json';
 assert(['create', 'verify'].includes(phase));
 fs.writeFileSync(signIn, JSON.stringify({auth_mode: 'apikey', OPENAI_API_KEY: 'disposable-probe-key'}), {mode: 0o600});
@@ -51,16 +53,22 @@ const api = http.createServer(async (req, res) => {
   if (req.headers['content-encoding'] === 'zstd') body = zstdDecompressSync(body);
   const request = JSON.parse(body);
   assert.equal(request.model, model);
+  assert(JSON.stringify(request.input).includes('send_message(args: { text: string; })'), 'Missing send_message tool declaration');
   let item;
   const id = `response-${++responses}`;
   if (responses === 1) {
     const script = `if (typeof tools.exec_command === 'function') text(await tools.exec_command({cmd:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},yield_time_ms:3000})); else text(await tools.shell_command({command:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},timeout_ms:3000}));`;
     item = {type: 'custom_tool_call', namespace: 'functions', name: 'exec', call_id: 'probe-call', input: script};
-  } else {
-    assert.equal(responses, 2);
+  } else if (responses === 2) {
     const output = JSON.stringify(request.input.filter(i => i.call_id === 'probe-call' && i.type === 'custom_tool_call_output'));
     assert(output.includes(marker), `Sandbox check failed: ${output}`);
-    item = {id: 'probe-result', type: 'message', role: 'assistant', phase: 'final_answer', content: [{type: 'output_text', text: 'workspace checked'}]};
+    item = {type: 'custom_tool_call', namespace: 'functions', name: 'exec', call_id: 'send-call',
+      input: `text(await tools.send_message(${JSON.stringify({text: messageText})}));`};
+  } else {
+    assert.equal(responses, 3);
+    const output = JSON.stringify(request.input.filter(i => i.call_id === 'send-call' && i.type === 'custom_tool_call_output'));
+    assert(output.includes('queued'), `Message tool result missing: ${output}`);
+    item = {id: 'probe-result', type: 'message', role: 'assistant', phase: 'final_answer', content: [{type: 'output_text', text: 'Done.'}]};
   }
   const events = [
     {type: 'response.created', response: {id}},
@@ -90,11 +98,25 @@ const api = http.createServer(async (req, res) => {
     });
     const pending = new Map();
     let next = 0;
+    let threadId;
+    let sent = 0;
     let complete;
     const done = new Promise(resolve => { complete = resolve; });
     ws.onmessage = ({data}) => {
       const message = JSON.parse(data);
-      assert(!(message.id != null && message.method), `Unexpected server request: ${message.method}`);
+      if (message.id != null && message.method) {
+        assert.equal(message.method, 'item/tool/call');
+        const call = message.params;
+        assert.equal(call.threadId, threadId);
+        assert(call.turnId);
+        assert(call.callId);
+        assert.equal(call.tool, 'send_message');
+        assert.equal(call.namespace ?? null, null);
+        assert.deepEqual(call.arguments, {text: messageText});
+        sent++;
+        ws.send(JSON.stringify({id: message.id, result: {success: true, contentItems: [{type: 'inputText', text: 'queued'}]}}));
+        return;
+      }
       if (message.id != null) pending.get(message.id)?.(message);
       if (message.method === 'turn/completed') complete(message.params.turn.status);
     };
@@ -111,15 +133,18 @@ const api = http.createServer(async (req, res) => {
     ws.send(JSON.stringify({method: 'initialized'}));
     const restrictions = {model, cwd, runtimeWorkspaceRoots: [cwd], permissions: profile, approvalPolicy: 'never', approvalsReviewer: 'user'};
     const thread = await rpc('thread/start', {...restrictions, ephemeral: true, modelProvider: 'openai', allowProviderModelFallback: false,
+      dynamicTools: [{type: 'function', name: 'send_message', description: 'Queue text for the user.', inputSchema}],
       config: {web_search: 'live', features: {standalone_web_search: true}}});
+    threadId = thread.thread.id;
     assert.equal(thread.activePermissionProfile.id, profile);
     assert.equal(thread.sandbox.type, 'workspaceWrite');
     assert.equal(thread.sandbox.networkAccess, true);
     assert.equal(thread.sandbox.excludeSlashTmp, true);
     assert.equal(thread.sandbox.excludeTmpdirEnvVar, true);
-    await rpc('turn/start', {...restrictions, threadId: thread.thread.id, input: [{type: 'text', text: 'Run the workspace probe.', text_elements: []}]});
+    await rpc('turn/start', {...restrictions, threadId, input: [{type: 'text', text: 'Run the workspace probe.', text_elements: []}]});
     assert.equal(await done, 'completed');
-    assert.equal(responses, 2);
+    assert.equal(responses, 3);
+    assert.equal(sent, 1);
     if (phase === 'create') {
       assert.equal(fs.readFileSync('probe-files/saved', 'utf8'), 'durable');
       assert.deepEqual(fs.readdirSync('probe-files'), ['saved']);

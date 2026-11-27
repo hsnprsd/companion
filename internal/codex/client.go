@@ -40,16 +40,18 @@ func (c Client) restrictions() params {
 	}
 }
 
-// Run returns the final text from a fresh ephemeral thread. It forwards at
-// most one completed commentary message to progress before the final answer.
-// Pass nil to omit commentary.
-func (c Client) Run(ctx context.Context, prompt string, progress func(string) error) (string, error) {
+// Run starts a fresh ephemeral thread and forwards only send_message calls
+// to sendMessage. Ordinary assistant text is not forwarded.
+func (c Client) Run(ctx context.Context, prompt string, sendMessage func(string) error) error {
 	if c.Model == "" || strings.TrimSpace(c.Model) != c.Model {
-		return "", errors.New("codex: specify an exact model ID")
+		return errors.New("codex: specify an exact model ID")
+	}
+	if sendMessage == nil {
+		return errors.New("codex: message callback is required")
 	}
 	s, err := connect(ctx, c.URL)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer s.close()
 
@@ -61,16 +63,16 @@ func (c Client) Run(ctx context.Context, prompt string, progress func(string) er
 		"clientInfo":   params{"name": "companion", "title": "Companion", "version": "0.1.0"},
 		"capabilities": params{"experimentalApi": true, "requestAttestation": false},
 	}, &init, nil); err != nil {
-		return "", err
+		return err
 	}
 	if init.CodexHome != codexHome || init.PlatformOS != "linux" {
-		return "", errors.New("codex: unexpected runner platform or CODEX_HOME")
+		return errors.New("codex: unexpected runner platform or CODEX_HOME")
 	}
 	if err := s.send(ctx, message{Method: "initialized"}); err != nil {
-		return "", err
+		return err
 	}
 	if err := c.checkCatalog(ctx, s); err != nil {
-		return "", err
+		return err
 	}
 
 	start := c.restrictions()
@@ -78,6 +80,7 @@ func (c Client) Run(ctx context.Context, prompt string, progress func(string) er
 	start["modelProvider"] = provider
 	start["allowProviderModelFallback"] = false
 	start["developerInstructions"] = workspaceNotesInstructions
+	start["dynamicTools"] = []params{sendMessageTool()}
 	// Responses Lite uses the native standalone search extension.
 	start["config"] = params{"web_search": "live", "features": params{"standalone_web_search": true}}
 	var started struct {
@@ -108,10 +111,10 @@ func (c Client) Run(ctx context.Context, prompt string, progress func(string) er
 		} `json:"activePermissionProfile"`
 	}
 	if err := s.request(ctx, "thread/start", start, &started, nil); err != nil {
-		return "", err
+		return err
 	}
 	if started.Model != c.Model || (started.Thread.Model != nil && *started.Thread.Model != c.Model) || started.ModelProvider != provider {
-		return "", fmt.Errorf("codex: app-server did not select configured model %q", c.Model)
+		return fmt.Errorf("codex: app-server did not select configured model %q", c.Model)
 	}
 	if started.Thread.ID == "" || !started.Thread.Ephemeral || len(started.Thread.Environments) != 1 ||
 		started.Thread.Environments[0].ID != "local" || started.Thread.Environments[0].CWD != workspaceDir ||
@@ -120,10 +123,10 @@ func (c Client) Run(ctx context.Context, prompt string, progress func(string) er
 		started.Sandbox.Type != "workspaceWrite" || started.Sandbox.NetworkAccess == nil || !*started.Sandbox.NetworkAccess ||
 		!started.Sandbox.ExcludeSlashTmp || !started.Sandbox.ExcludeTmpdirEnvVar ||
 		(len(started.Sandbox.WritableRoots) != 0 && (len(started.Sandbox.WritableRoots) != 1 || started.Sandbox.WritableRoots[0] != workspaceDir)) {
-		return "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
+		return errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
 	}
 
-	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, progress: progress}
+	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, sendMessage: sendMessage}
 	turn := c.restrictions()
 	turn["threadId"] = t.threadID
 	turn["input"] = []params{{"type": "text", "text": prompt, "text_elements": []any{}}}
@@ -178,27 +181,19 @@ type turnRun struct {
 	s                *session
 	threadID, turnID string
 	model            string
-	final, last      string
-	progress         func(string) error
+	sendMessage      func(string) error
 	done             bool
 }
 
-type threadItem struct {
-	Type  string `json:"type"`
-	Text  string `json:"text"`
-	Phase string `json:"phase"`
-}
-
 type turnState struct {
-	ID     string       `json:"id"`
-	Status string       `json:"status"`
-	Items  []threadItem `json:"items"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
 	Error  *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
 
-func (t *turnRun) run(ctx context.Context, p params) (string, error) {
+func (t *turnRun) run(ctx context.Context, p params) error {
 	defer func() {
 		if !t.done && t.turnID != "" {
 			t.interrupt(ctx)
@@ -210,13 +205,10 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 	var pending []message
 	size := 0
 	if err := t.s.request(ctx, "turn/start", p, &started, func(m message) error {
-		if !turnEvent(m) {
-			if len(m.ID) != 0 {
-				return t.s.reject(ctx, m, -32601, "server request not allowed")
-			}
-			return nil
+		if !turnEvent(m) && !toolCall(m) {
+			return t.dispatch(ctx, m)
 		}
-		// Match early events after the server returns the turn ID.
+		// Match early notifications and tool calls after the server returns the turn ID.
 		size += len(m.Params)
 		if len(pending) >= 256 || size > maxMessageBytes {
 			return errors.New("codex: too many events before turn/start reply")
@@ -224,37 +216,30 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 		pending = append(pending, m)
 		return nil
 	}); err != nil {
-		return "", err
+		return err
 	}
 	t.turnID = started.Turn.ID
 	if t.turnID == "" {
-		return "", errors.New("codex: missing turn ID")
+		return errors.New("codex: missing turn ID")
 	}
 	if err := t.updateTurn(started.Turn); err != nil {
-		return "", err
+		return err
 	}
 	for _, m := range pending {
 		if err := t.dispatch(ctx, m); err != nil {
-			return "", err
+			return err
 		}
 	}
 	for !t.done {
 		m, err := t.s.receive(ctx)
 		if err != nil {
-			return "", err
+			return err
 		}
 		if err := t.dispatch(ctx, m); err != nil {
-			return "", err
+			return err
 		}
 	}
-	text := t.final
-	if text == "" {
-		text = t.last
-	}
-	if text == "" {
-		return "", errors.New("codex: turn completed without an assistant answer")
-	}
-	return text, nil
+	return nil
 }
 
 func turnEvent(m message) bool {
@@ -262,7 +247,7 @@ func turnEvent(m message) bool {
 		return false
 	}
 	switch m.Method {
-	case "item/completed", "turn/completed", "model/rerouted", "thread/settings/updated":
+	case "turn/completed", "model/rerouted", "thread/settings/updated":
 		return true
 	}
 	return false
@@ -272,6 +257,9 @@ func (t *turnRun) dispatch(ctx context.Context, m message) error {
 	if m.Method == "" {
 		return nil
 	}
+	if toolCall(m) {
+		return t.handleToolCall(ctx, m)
+	}
 	if len(m.ID) != 0 {
 		return t.s.reject(ctx, m, -32601, "server request not allowed")
 	}
@@ -279,10 +267,9 @@ func (t *turnRun) dispatch(ctx context.Context, m message) error {
 		return nil
 	}
 	var e struct {
-		ThreadID string     `json:"threadId"`
-		TurnID   string     `json:"turnId"`
-		Turn     turnState  `json:"turn"`
-		Item     threadItem `json:"item"`
+		ThreadID string    `json:"threadId"`
+		TurnID   string    `json:"turnId"`
+		Turn     turnState `json:"turn"`
 		Settings struct {
 			Model string `json:"model"`
 		} `json:"threadSettings"`
@@ -305,22 +292,8 @@ func (t *turnRun) dispatch(ctx context.Context, m message) error {
 		}
 		return nil
 	}
-	if e.TurnID != t.turnID {
-		return nil
-	}
-	switch m.Method {
-	case "model/rerouted":
+	if m.Method == "model/rerouted" && e.TurnID == t.turnID {
 		return errors.New("codex: turn was rerouted from the configured model")
-	case "item/completed":
-		if e.Item.Type == "agentMessage" && e.Item.Phase == "commentary" {
-			if text := strings.TrimSpace(e.Item.Text); text != "" && t.progress != nil && !t.done && t.final == "" {
-				progress := t.progress
-				t.progress = nil
-				return progress(text)
-			}
-			return nil
-		}
-		t.item(e.Item)
 	}
 	return nil
 }
@@ -339,24 +312,7 @@ func (t *turnRun) updateTurn(state turnState) error {
 	default:
 		return fmt.Errorf("codex: unexpected turn status %q", state.Status)
 	}
-	if t.done {
-		for _, item := range state.Items {
-			t.item(item)
-		}
-	}
 	return nil
-}
-
-func (t *turnRun) item(item threadItem) {
-	if item.Type != "agentMessage" || strings.TrimSpace(item.Text) == "" {
-		return
-	}
-	switch item.Phase {
-	case "final_answer":
-		t.final = item.Text
-	case "": // Older models may omit phase.
-		t.last = item.Text
-	}
 }
 
 func (t *turnRun) interrupt(ctx context.Context) {

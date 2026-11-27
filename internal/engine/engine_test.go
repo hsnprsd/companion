@@ -11,13 +11,15 @@ import (
 	"time"
 )
 
-type runnerFunc func(context.Context, string) (string, error)
+type runnerFunc func(context.Context, string, func(string) error) error
 
-func (r runnerFunc) Run(ctx context.Context, prompt string, _ func(string) error) (string, error) {
-	return r(ctx, prompt)
+func (r runnerFunc) Run(ctx context.Context, prompt string, sendMessage func(string) error) error {
+	return r(ctx, prompt, sendMessage)
 }
 
-var echoRunner runnerFunc = func(context.Context, string) (string, error) { return "done", nil }
+var echoRunner runnerFunc = func(_ context.Context, _ string, sendMessage func(string) error) error {
+	return sendMessage("done")
+}
 
 func openEngine(t *testing.T, dir string, r Runner) *Engine {
 	t.Helper()
@@ -199,9 +201,9 @@ func TestNoteRequestsUseConversation(t *testing.T) {
 	const remember = "Please remember that I prefer short summaries."
 	const forget = "Forget my preference for short summaries."
 	var prompts []string
-	r := runnerFunc(func(_ context.Context, prompt string) (string, error) {
+	r := runnerFunc(func(_ context.Context, prompt string, sendMessage func(string) error) error {
 		prompts = append(prompts, prompt)
-		return "fixture reply", nil
+		return sendMessage("fixture reply")
 	})
 	dir := t.TempDir()
 	e := openEngine(t, dir, r)

@@ -25,7 +25,7 @@ flowchart LR
 | App entry point | Validate configuration and supervise the service loops. | [`main.go`](main.go), [`config.go`](config.go) |
 | Telegram client | Poll for text updates from the configured private chat. Send plain-text replies. | [`internal/telegram`](internal/telegram) |
 | Engine | Handle commands, save state, select work, build prompts, and drain the outbox. | [`internal/engine`](internal/engine) |
-| Codex client | Run one ephemeral app-server turn and return the final text. | [`internal/codex`](internal/codex) |
+| Codex client | Run one ephemeral app-server turn and handle message tool calls. | [`internal/codex`](internal/codex) |
 
 [Compose](compose.yaml) runs two services with separate filesystems. The app joins the runner's network namespace to reach `ws://127.0.0.1:4500`. Neither service publishes a port. The runner joins a Docker bridge with egress, which also lets the app reach Telegram. If you replace the runner, recreate the app so that it joins the new network namespace.
 
@@ -86,7 +86,7 @@ The Telegram client uses a 40-second HTTP timeout and does not follow redirects.
 
 ## 5. Request queue and memory
 
-The worker runs requests in the order it receives them. The active request stays at the head of the saved queue. Each step has a five-minute timeout. On success, one commit removes the request, saves the conversation turn, and adds the reply to the outbox. A model error or timeout removes the request, saves the user text without an assistant reply, and queues an error message. The worker then takes the next request. It does not retry a model error automatically.
+The worker runs requests in the order it receives them. The active request stays at the head of the saved queue. Each step has a five-minute timeout. At the end of a step, one commit removes the request and saves the conversation turn with all model messages queued during that step, in order. If the model fails, times out, or sends no messages, the same commit queues an error message. Messages already queued stay in the outbox until delivery handles them. The worker then takes the next request. It does not retry a model error automatically.
 
 Each prompt includes the current request and up to 20 earlier conversation records.
 
@@ -96,9 +96,7 @@ Codex receives developer instructions to consult and maintain notes in `/workspa
 
 The [Codex client](internal/codex/client.go) opens one WebSocket per step. It sends `initialize` and `initialized`, checks Linux and `CODEX_HOME`, and looks for the exact configured model in the OpenAI `model/list` catalog. It requests a fresh ephemeral `thread/start` with provider fallback disabled. It checks the reported model, local environment, workspace roots, permission profile, approval policy, and that the shell has network access before sending `turn/start`.
 
-The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time and buffers a limited set of early turn notifications until it knows the turn ID. App-server runs native tools directly. The client rejects all server requests, including approval requests.
-
-The client returns the final assistant text, or the last assistant message if app-server did not mark a final answer. The client does not stream partial text to Telegram.
+The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time and buffers a limited set of early turn notifications and tool requests until it knows the turn ID. App-server runs native tools directly. The client registers the `send_message` dynamic tool and accepts calls to it only for the active thread and turn. The client rejects other server requests, including approval requests.
 
 The client rejects model changes and reroutes. It does not retry turns or select a fallback model. On cancellation or an early error with a known turn ID, it attempts `turn/interrupt` for up to one second. Neither an interrupt nor a WebSocket close proves that a native tool stopped. See the [runner contract](internal/codex/README.md) for protocol and account limits.
 
@@ -112,7 +110,7 @@ The shell boundary does not control app-server network requests. Native live web
 
 ## 8. Telegram output and delivery
 
-The prompt asks the model to send one short commentary message when it expects the work to take time. For the active step, the engine queues that message in the outbox and lets the same turn continue. There is no timer for progress text. The update does not enter conversation history.
+The model uses `send_message` for all text it wants the user to see, including the complete answer. Each call adds a separate message to the saved outbox. The tool returns `queued` after the save. It does not wait for Telegram. The model can send multiple messages in one turn. There is no separate path for progress or final text. The app does not forward ordinary assistant text or stream partial text.
 
 The outbox is first-in, first-out. The delivery loop splits messages at up to 4,096 UTF-16 code units without splitting a Unicode code point. It sends plain text with link previews disabled.
 
@@ -125,7 +123,7 @@ On a permanent rejection or an unknown result, the engine records a delivery inc
 | Saved condition | Recovery behavior |
 | --- | --- |
 | An update and its effects were committed | Resume polling from the saved cursor. |
-| A request is still pending | Start a new ephemeral step. Partial output is not a checkpoint. The prompt tells the agent to check the workspace before it repeats work. |
+| A request is still pending | Start a new ephemeral step. Messages already queued can still reach the user. They do not prevent the new step from sending the same text again. The prompt tells the agent to check the workspace before it repeats work. |
 | A text part was marked `sending` | Record an uncertain delivery and queue a notice. Resume other deliveries from their confirmed positions and saved retry times. |
 
 The app does not provide exactly-once execution for model turns, native tools, or Telegram delivery. The state-volume lock prevents two engines from writing one snapshot. It does not coordinate separate deployments.

@@ -19,11 +19,6 @@ import (
 
 const testModel = "model-exact"
 
-type outcome struct {
-	text string
-	err  error
-}
-
 type peer struct {
 	t   *testing.T
 	ctx context.Context
@@ -55,22 +50,22 @@ func testRunner(t *testing.T) (Client, <-chan *websocket.Conn) {
 	return Client{URL: "ws" + strings.TrimPrefix(server.URL, "http"), Model: testModel}, connections
 }
 
-func launch(t *testing.T, client Client, connections <-chan *websocket.Conn) (*peer, <-chan outcome, context.CancelFunc) {
+func launch(t *testing.T, client Client, connections <-chan *websocket.Conn) (*peer, <-chan error, context.CancelFunc) {
 	t.Helper()
-	return launchWithProgress(t, client, connections, nil)
+	return launchWithMessages(t, client, connections, func(text string) error {
+		t.Errorf("unexpected message %q", text)
+		return nil
+	})
 }
 
-func launchWithProgress(t *testing.T, client Client, connections <-chan *websocket.Conn, progress func(string) error) (*peer, <-chan outcome, context.CancelFunc) {
+func launchWithMessages(t *testing.T, client Client, connections <-chan *websocket.Conn, sendMessage func(string) error) (*peer, <-chan error, context.CancelFunc) {
 	t.Helper()
 	peerCtx, cancelPeer := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancelPeer)
 	ctx, cancel := context.WithCancel(peerCtx)
 	t.Cleanup(cancel)
-	results := make(chan outcome, 1)
-	go func() {
-		text, err := client.Run(ctx, "fixture prompt", progress)
-		results <- outcome{text, err}
-	}()
+	results := make(chan error, 1)
+	go func() { results <- client.Run(ctx, "fixture prompt", sendMessage) }()
 	select {
 	case ws := <-connections:
 		t.Cleanup(func() { _ = ws.CloseNow() })
@@ -186,7 +181,15 @@ func (p *peer) thread(id string) {
 	check(p.t, cfg["web_search"], "live")
 	check(p.t, cfg["permissions"], nil)
 	check(p.t, args["developerInstructions"], workspaceNotesInstructions)
-	check(p.t, args["dynamicTools"], nil)
+	tools := args["dynamicTools"].([]any)
+	check(p.t, len(tools), 1)
+	tool := tools[0].(map[string]any)
+	check(p.t, tool["type"], "function")
+	check(p.t, tool["name"], "send_message")
+	check(p.t, tool["inputSchema"], params{
+		"type": "object", "properties": params{"text": params{"type": "string"}},
+		"required": []any{"text"}, "additionalProperties": false,
+	})
 	p.reply(m, threadResult(id))
 }
 
@@ -208,15 +211,31 @@ func item(name, phase, text string) params {
 	return params{"type": name, "phase": phase, "text": text}
 }
 
-func waitResult(t *testing.T, results <-chan outcome) outcome {
+func waitResult(t *testing.T, results <-chan error) error {
 	t.Helper()
 	select {
-	case result := <-results:
-		return result
+	case err := <-results:
+		return err
 	case <-time.After(6 * time.Second):
 		t.Fatal("Run did not exit")
-		return outcome{}
+		return nil
 	}
+}
+
+func toolArgs(thread, turn, call string, arguments any) params {
+	return params{"threadId": thread, "turnId": turn, "callId": call, "tool": "send_message", "arguments": arguments}
+}
+
+func (p *peer) assertToolResult(id string, success bool, text string) {
+	p.t.Helper()
+	r := p.read("")
+	check(p.t, string(r.ID), id)
+	if r.Error != nil {
+		p.t.Fatalf("unexpected RPC error: %+v", r.Error)
+	}
+	check(p.t, decode[params](p.t, r.Result), params{
+		"success": success, "contentItems": []any{params{"type": "inputText", "text": text}},
+	})
 }
 
 func (p *peer) assertRejection(id string, code int) {
@@ -266,7 +285,7 @@ func TestRunProtocol(t *testing.T) {
 	done := turnResult("turn-1", "completed")
 	done["threadId"] = "thread-1"
 	p.event("turn/completed", done)
-	check(t, waitResult(t, results), outcome{text: "The final answer."})
+	check(t, waitResult(t, results), nil)
 
 	// The next step opens another socket and starts another ephemeral thread.
 	p, results, _ = launch(t, client, conns)
@@ -277,52 +296,61 @@ func TestRunProtocol(t *testing.T) {
 	done = turnResult("turn-2", "completed", item("agentMessage", "", "A second answer"))
 	done["threadId"] = "thread-2"
 	p.event("turn/completed", done)
-	check(t, waitResult(t, results), outcome{text: "A second answer"})
+	check(t, waitResult(t, results), nil)
 }
 
-func TestRunForwardsCommentaryBeforeFinalAnswer(t *testing.T) {
-	for _, hasUpdate := range []bool{true, false} {
-		t.Run(map[bool]string{true: "updates", false: "already finished"}[hasUpdate], func(t *testing.T) {
-			client, conns := testRunner(t)
-			updates := make(chan string, 8)
-			p, results, _ := launchWithProgress(t, client, conns, func(text string) error {
-				updates <- text
-				return nil
-			})
-			p.init()
-			p.catalog()
-			p.thread("thread")
-			turn := p.turn("thread")
-			sendItem := func(thread, turn, kind, phase, text string) {
-				p.event("item/completed", params{"threadId": thread, "turnId": turn, "item": item(kind, phase, text)})
-			}
-			sendItem("foreign", "turn", "agentMessage", "commentary", "Foreign update")
-			sendItem("thread", "foreign", "agentMessage", "commentary", "Wrong turn")
-			sendItem("thread", "turn", "reasoning", "commentary", "Internal text")
-			sendItem("thread", "turn", "agentMessage", "commentary", "  ")
-			if hasUpdate {
-				// The server can emit a completed item before it replies to turn/start.
-				sendItem("thread", "turn", "agentMessage", "commentary", "I will check the workspace.")
-			}
-			p.reply(turn, turnResult("turn", "inProgress"))
-			if hasUpdate {
-				select {
-				case text := <-updates:
-					check(t, text, "I will check the workspace.")
-				case <-p.ctx.Done():
-					t.Fatal("no commentary before the end of the turn")
-				}
-				sendItem("thread", "turn", "agentMessage", "commentary", "A second update")
-			}
-			sendItem("thread", "turn", "agentMessage", "final_answer", "Full answer")
-			sendItem("thread", "turn", "agentMessage", "commentary", "Too late")
-			done := turnResult("turn", "completed", item("agentMessage", "commentary", "Snapshot only"))
-			done["threadId"] = "thread"
-			p.event("turn/completed", done)
-			check(t, waitResult(t, results), outcome{text: "Full answer"})
-			check(t, len(updates), 0)
-		})
+func TestRunForwardsSendMessageCallsInOrder(t *testing.T) {
+	client, conns := testRunner(t)
+	var queued []string
+	p, results, _ := launchWithMessages(t, client, conns, func(text string) error {
+		queued = append(queued, text)
+		return nil
+	})
+	p.init()
+	p.catalog()
+	p.thread("thread")
+	turn := p.turn("thread")
+	p.serverRequest(1, "item/tool/call", toolArgs("thread", "turn", "first", params{"text": "I will check the workspace."}))
+	p.reply(turn, turnResult("turn", "inProgress"))
+	p.assertToolResult("1", true, "queued")
+
+	foreign := toolArgs("other", "turn", "wrong-thread", params{"text": "Do not send"})
+	wrongTurn := toolArgs("thread", "other", "wrong-turn", params{"text": "Do not send"})
+	namespaced := toolArgs("thread", "turn", "wrong-namespace", params{"text": "Do not send"})
+	namespaced["namespace"] = "other"
+	wrongTool := toolArgs("thread", "turn", "wrong-tool", params{"text": "Do not send"})
+	wrongTool["tool"] = "other"
+	for _, args := range []params{foreign, wrongTurn, namespaced, wrongTool} {
+		p.serverRequest("reject", "item/tool/call", args)
+		p.assertRejection(`"reject"`, -32601)
 	}
+	for _, args := range []any{nil, params{"text": "  "}, params{"text": 42}, params{"text": "Do not send", "chat_id": "other"}} {
+		p.serverRequest("invalid", "item/tool/call", toolArgs("thread", "turn", "invalid", args))
+		p.assertToolResult(`"invalid"`, false, "Supply a non-blank text string and no other arguments.")
+	}
+	p.event("item/tool/call", toolArgs("thread", "turn", "no-rpc-id", params{"text": "Ignore this notification"}))
+	p.serverRequest("second", "item/tool/call", toolArgs("thread", "turn", "second", params{"text": "I found two files."}))
+	p.serverRequest("third", "item/tool/call", toolArgs("thread", "turn", "third", params{"text": "The full answer."}))
+	p.assertToolResult(`"second"`, true, "queued")
+	p.assertToolResult(`"third"`, true, "queued")
+	done := turnResult("turn", "completed", item("agentMessage", "final_answer", "Do not send this either"))
+	done["threadId"] = "thread"
+	p.event("turn/completed", done)
+	check(t, waitResult(t, results), nil)
+	check(t, queued, []string{"I will check the workspace.", "I found two files.", "The full answer."})
+}
+
+func TestRunDoesNotAcknowledgeMessageWhenQueueFails(t *testing.T) {
+	client, conns := testRunner(t)
+	want := errors.New("storage failed")
+	p, results, _ := launchWithMessages(t, client, conns, func(string) error { return want })
+	p.init()
+	p.catalog()
+	p.thread("thread")
+	p.reply(p.turn("thread"), turnResult("turn", "inProgress"))
+	p.serverRequest("send", "item/tool/call", toolArgs("thread", "turn", "send", params{"text": "Do not acknowledge"}))
+	p.reply(p.read("turn/interrupt"), params{})
+	check(t, waitResult(t, results), want)
 }
 
 func TestRunSendsConfiguredThinkingLevel(t *testing.T) {
@@ -338,7 +366,7 @@ func TestRunSendsConfiguredThinkingLevel(t *testing.T) {
 	turn := p.turn("thread")
 	check(t, decode[params](t, turn.Params)["effort"], "focused")
 	p.reply(turn, turnResult("turn", "completed", item("agentMessage", "final_answer", "Done.")))
-	check(t, waitResult(t, results), outcome{text: "Done."})
+	check(t, waitResult(t, results), nil)
 }
 
 func TestRunRejectsUnsupportedThinkingLevel(t *testing.T) {
@@ -351,7 +379,7 @@ func TestRunRejectsUnsupportedThinkingLevel(t *testing.T) {
 		{"model": testModel, "supportedReasoningEfforts": []params{{"reasoningEffort": "medium"}}},
 	}})
 	const want = `thinking-level "high" is not supported by model "model-exact"`
-	if result := waitResult(t, results); result.err == nil || !strings.Contains(result.err.Error(), want) {
+	if result := waitResult(t, results); result == nil || !strings.Contains(result.Error(), want) {
 		t.Fatalf("got %+v, want %q", result, want)
 	}
 }
@@ -361,7 +389,7 @@ func TestRunRejectsMissingModel(t *testing.T) {
 	p, results, _ := launch(t, client, conns)
 	p.init()
 	p.reply(p.read("model/list"), params{"data": []params{{"id": testModel, "model": "MODEL-EXACT"}}})
-	if result := waitResult(t, results); result.err == nil || !strings.Contains(result.err.Error(), "not in the app-server catalog") {
+	if result := waitResult(t, results); result == nil || !strings.Contains(result.Error(), "not in the app-server catalog") {
 		t.Fatalf("got %+v, want missing model error", result)
 	}
 }
@@ -388,7 +416,7 @@ func TestRunRejectsUnexpectedThreadSettings(t *testing.T) {
 			result := threadResult("thread")
 			tc.set(result)
 			p.reply(p.read("thread/start"), result)
-			if got := waitResult(t, results); got.err == nil || !strings.Contains(got.err.Error(), tc.want) {
+			if got := waitResult(t, results); got == nil || !strings.Contains(got.Error(), tc.want) {
 				t.Fatalf("got %+v, want %q", got, tc.want)
 			}
 		})
@@ -396,7 +424,7 @@ func TestRunRejectsUnexpectedThreadSettings(t *testing.T) {
 }
 
 func TestRunTurnErrors(t *testing.T) {
-	for _, name := range []string{"reroute", "cancel", "failure", "interrupted", "no answer", "disconnect"} {
+	for _, name := range []string{"reroute", "cancel", "failure", "interrupted", "disconnect"} {
 		t.Run(name, func(t *testing.T) {
 			client, conns := testRunner(t)
 			p, results, cancel := launch(t, client, conns)
@@ -426,10 +454,6 @@ func TestRunTurnErrors(t *testing.T) {
 				state["status"] = "interrupted"
 				p.event("turn/completed", done)
 				want = "interrupted"
-			case "no answer":
-				state["status"] = "completed"
-				p.event("turn/completed", done)
-				want = "without an assistant answer"
 			case "disconnect":
 				_ = p.ws.CloseNow()
 				want = "read app-server WebSocket"
@@ -440,11 +464,11 @@ func TestRunTurnErrors(t *testing.T) {
 				p.reply(m, params{})
 			}
 			result := waitResult(t, results)
-			if result.text != "" || result.err == nil || !strings.Contains(result.err.Error(), want) {
+			if result == nil || !strings.Contains(result.Error(), want) {
 				t.Fatalf("got %+v, want %q", result, want)
 			}
-			if name == "cancel" && !errors.Is(result.err, context.Canceled) {
-				t.Fatalf("lost context error: %v", result.err)
+			if name == "cancel" && !errors.Is(result, context.Canceled) {
+				t.Fatalf("lost context error: %v", result)
 			}
 		})
 	}

@@ -1,8 +1,8 @@
 # Codex runner contract
 
-Use Codex CLI `0.172.0`. The client opens one WebSocket and starts one ephemeral thread per `Run`. It checks the OpenAI model catalog, the selected thread model, and model-change notifications. It does not retry a turn or select a fallback model. The client rejects server requests, including requests for more permissions.
+Use Codex CLI `0.172.0`. The client opens one WebSocket and starts one ephemeral thread per `Run`. It checks the OpenAI model catalog, the selected thread model, and model-change notifications. It does not retry a turn or select a fallback model. The client rejects server requests other than authorized `send_message` calls, including requests for more permissions.
 
-Forward only the first non-blank, completed `agentMessage` with phase `commentary` from the active thread and turn, before the final answer. Do not forward message fragments or commentary found only in the completed turn snapshot. Do not use commentary as the final answer.
+Register `send_message` as a function in `thread/start.dynamicTools`. Accept `item/tool/call` for this function only from the active thread and turn. Accept one argument, a non-blank `text` string. Return a successful tool result with `queued` only after the engine saves the message. Do not forward ordinary assistant text.
 
 Require an exact match for the thinking level in the selected model's `supportedReasoningEfforts` list. If no option matches, return an error before creating a thread. Otherwise, send the value as `effort` in `turn/start`. Companion uses `medium` when `thinking-level` is absent. If `thinking-level` is `null`, skip the check and omit `effort`.
 
@@ -44,4 +44,4 @@ The runner uses UID/GID `1000:1000`. The expected modes are `700` for the direct
 
 ## Verify
 
-Run `go test -race ./internal/codex` for the WebSocket contract. Run [`tests/runner.sh`](../../tests/runner.sh) from the repository root to test real Codex with a local model fixture. The probe checks native file operations without approvals, workspace persistence across runner replacement, HTTP access over the Docker bridge, and that the shell cannot directly read sign-in files. It uses disposable volumes. It does not contact OpenAI or check production account access.
+Run `go test -race ./internal/codex` for the WebSocket contract. Run [`tests/runner.sh`](../../tests/runner.sh) from the repository root to test real Codex with a local model fixture. The probe checks native file operations without approvals, workspace persistence across runner replacement, HTTP access over the Docker bridge, and that the shell cannot directly read sign-in files. It also checks that Codex exposes `tools.send_message` in `functions.exec` and returns its result to the model. It uses disposable volumes. It does not contact OpenAI or check production account access.

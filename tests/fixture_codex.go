@@ -20,6 +20,13 @@ type rpc struct {
 	ID     json.RawMessage `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
+	Result struct {
+		Success      bool `json:"success"`
+		ContentItems []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"contentItems"`
+	} `json:"result,omitempty"`
 }
 
 func (f *fixture) codex(w http.ResponseWriter, r *http.Request) {
@@ -75,14 +82,17 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		return err
 	}
 	var start struct {
-		Model        string          `json:"model"`
-		Provider     string          `json:"modelProvider"`
-		Permissions  string          `json:"permissions"`
-		CWD          string          `json:"cwd"`
-		Approval     string          `json:"approvalPolicy"`
-		Ephemeral    bool            `json:"ephemeral"`
-		Instructions string          `json:"developerInstructions"`
-		Tools        json.RawMessage `json:"dynamicTools"`
+		Model        string `json:"model"`
+		Provider     string `json:"modelProvider"`
+		Permissions  string `json:"permissions"`
+		CWD          string `json:"cwd"`
+		Approval     string `json:"approvalPolicy"`
+		Ephemeral    bool   `json:"ephemeral"`
+		Instructions string `json:"developerInstructions"`
+		Tools        []struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"dynamicTools"`
 	}
 	m, err = read("thread/start", &start)
 	if err != nil {
@@ -91,8 +101,8 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if start.Model != model || start.Provider != "openai" || start.Permissions != "companion-workspace" || start.CWD != "/workspace" || start.Approval != "never" || !start.Ephemeral {
 		return fmt.Errorf("wrong model or thread restrictions: %s", m.Params)
 	}
-	if len(start.Tools) != 0 {
-		return fmt.Errorf("thread/start must omit dynamic tools")
+	if len(start.Tools) != 1 || start.Tools[0].Type != "function" || start.Tools[0].Name != "send_message" {
+		return fmt.Errorf("thread/start must register only the send_message tool")
 	}
 	for _, want := range []string{"/workspace/notes", "without waiting for a request", "one Markdown file per topic", "Handle note requests in ordinary conversation."} {
 		if !strings.Contains(start.Instructions, want) {
@@ -131,8 +141,8 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	}
 	var p prompt
 	instructions, data, _ := strings.Cut(run.Input[0].Text, "\n{")
-	if !strings.Contains(instructions, "one short plain-text commentary message") {
-		return fmt.Errorf("missing progress instructions in turn prompt")
+	if !strings.Contains(instructions, "Use send_message for all user-visible text, including the complete answer.") {
+		return fmt.Errorf("missing send_message instructions in turn prompt")
 	}
 	if err := json.Unmarshal([]byte("{"+data), &p); err != nil {
 		return fmt.Errorf("invalid Companion turn context: %w", err)
@@ -154,11 +164,24 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		}
 		return reply(m, fields{})
 	}
-	if name == "slow-fixture" {
-		if err := wsjson.Write(ctx, ws, fields{"method": "item/completed", "params": fields{
-			"threadId": thread, "turnId": turn,
-			"item": fields{"type": "agentMessage", "phase": "commentary", "text": "I will inspect the fixture files."},
+	sendMessage := func(id, text string) error {
+		if err := wsjson.Write(ctx, ws, fields{"id": id, "method": "item/tool/call", "params": fields{
+			"threadId": thread, "turnId": turn, "callId": id, "tool": "send_message", "arguments": fields{"text": text},
 		}}); err != nil {
+			return err
+		}
+		r, err := read("", nil)
+		if err != nil {
+			return err
+		}
+		items := r.Result.ContentItems
+		if string(r.ID) != fmt.Sprintf("%q", id) || !r.Result.Success || len(items) != 1 || items[0].Type != "inputText" || items[0].Text != "queued" {
+			return fmt.Errorf("send_message call %q did not report queued", id)
+		}
+		return nil
+	}
+	if name == "slow-fixture" {
+		if err := sendMessage("update", "I will inspect the fixture files."); err != nil {
 			return err
 		}
 		select {
@@ -171,10 +194,11 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if err != nil {
 		return err
 	}
+	if err := sendMessage("answer", final); err != nil {
+		return err
+	}
 	return wsjson.Write(ctx, ws, fields{"method": "turn/completed", "params": fields{
-		"threadId": thread, "turn": fields{"id": turn, "status": "completed", "items": []fields{
-			{"type": "agentMessage", "phase": "final_answer", "text": final},
-		}},
+		"threadId": thread, "turn": fields{"id": turn, "status": "completed"},
 	}})
 }
 

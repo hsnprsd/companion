@@ -15,14 +15,15 @@ import (
 	"unicode/utf8"
 )
 
-// Runner runs one model step. Call progress at most once during Run, with a
-// model-written update, and return any callback error.
+// Runner runs one model step. Call sendMessage for each user-visible message
+// in order during Run. Return any callback error.
 type Runner interface {
-	Run(ctx context.Context, prompt string, progress func(string) error) (string, error)
+	Run(ctx context.Context, prompt string, sendMessage func(string) error) error
 }
 
 type activeStep struct {
-	cancel context.CancelFunc
+	cancel   context.CancelFunc
+	messages []string
 }
 
 // Engine owns the snapshot and serializes all durable state changes.
