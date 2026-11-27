@@ -10,9 +10,6 @@ const model = 'gpt-6-luna';
 const cwd = '/workspace';
 const profile = 'companion-workspace';
 const marker = 'runner-probe-marker';
-const reactionTool = 'telegram_react';
-const reactionCall = 'probe-reaction';
-const reactionAck = 'reaction queued';
 const signIn = '/home/node/.codex/auth.json';
 assert(['create', 'verify'].includes(phase));
 fs.writeFileSync(signIn, JSON.stringify({auth_mode: 'apikey', OPENAI_API_KEY: 'disposable-probe-key'}), {mode: 0o600});
@@ -57,18 +54,12 @@ const api = http.createServer(async (req, res) => {
   let item;
   const id = `response-${++responses}`;
   if (responses === 1) {
-    assert(JSON.stringify(request).includes(reactionTool), 'Reaction tool missing from model request');
     const script = `if (typeof tools.exec_command === 'function') text(await tools.exec_command({cmd:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},yield_time_ms:3000})); else text(await tools.shell_command({command:${JSON.stringify(checks)},workdir:${JSON.stringify(cwd)},timeout_ms:3000}));`;
     item = {type: 'custom_tool_call', namespace: 'functions', name: 'exec', call_id: 'probe-call', input: script};
-  } else if (responses === 2) {
+  } else {
+    assert.equal(responses, 2);
     const output = JSON.stringify(request.input.filter(i => i.call_id === 'probe-call' && i.type === 'custom_tool_call_output'));
     assert(output.includes(marker), `Sandbox check failed: ${output}`);
-    item = {type: 'custom_tool_call', namespace: 'functions', name: 'exec', call_id: reactionCall,
-      input: `text(await tools.${reactionTool}({emoji: "👍"}));`};
-  } else {
-    assert.equal(responses, 3);
-    const output = JSON.stringify(request.input.filter(i => i.call_id === reactionCall && i.type === 'custom_tool_call_output'));
-    assert(output.includes(reactionAck), `Reaction tool check failed: ${output}`);
     item = {id: 'probe-result', type: 'message', role: 'assistant', phase: 'final_answer', content: [{type: 'output_text', text: 'workspace checked'}]};
   }
   const events = [
@@ -100,21 +91,10 @@ const api = http.createServer(async (req, res) => {
     const pending = new Map();
     let next = 0;
     let complete;
-    let threadID;
     const done = new Promise(resolve => { complete = resolve; });
     ws.onmessage = ({data}) => {
       const message = JSON.parse(data);
-      if (message.id != null && message.method) {
-        assert.equal(message.method, 'item/tool/call');
-        const call = message.params;
-        assert.equal(call.threadId, threadID);
-        assert.equal(call.tool, reactionTool);
-        assert(typeof call.callId === 'string' && call.callId.length > 0);
-        assert.equal(call.namespace, null);
-        assert.deepEqual(call.arguments, {emoji: '👍'});
-        ws.send(JSON.stringify({id: message.id, result: {success: true, contentItems: [{type: 'inputText', text: reactionAck}]}}));
-        return;
-      }
+      assert(!(message.id != null && message.method), `Unexpected server request: ${message.method}`);
       if (message.id != null) pending.get(message.id)?.(message);
       if (message.method === 'turn/completed') complete(message.params.turn.status);
     };
@@ -131,10 +111,7 @@ const api = http.createServer(async (req, res) => {
     ws.send(JSON.stringify({method: 'initialized'}));
     const restrictions = {model, cwd, runtimeWorkspaceRoots: [cwd], permissions: profile, approvalPolicy: 'never', approvalsReviewer: 'user'};
     const thread = await rpc('thread/start', {...restrictions, ephemeral: true, modelProvider: 'openai', allowProviderModelFallback: false,
-      config: {web_search: 'live', features: {standalone_web_search: true}},
-      dynamicTools: [{type: 'function', name: reactionTool, description: 'React to a Telegram message.',
-        inputSchema: {type: 'object', properties: {emoji: {type: 'string', enum: ['👍']}}, required: ['emoji'], additionalProperties: false}}]});
-    threadID = thread.thread.id;
+      config: {web_search: 'live', features: {standalone_web_search: true}}});
     assert.equal(thread.activePermissionProfile.id, profile);
     assert.equal(thread.sandbox.type, 'workspaceWrite');
     assert.equal(thread.sandbox.networkAccess, true);
@@ -142,7 +119,7 @@ const api = http.createServer(async (req, res) => {
     assert.equal(thread.sandbox.excludeTmpdirEnvVar, true);
     await rpc('turn/start', {...restrictions, threadId: thread.thread.id, input: [{type: 'text', text: 'Run the workspace probe.', text_elements: []}]});
     assert.equal(await done, 'completed');
-    assert.equal(responses, 3);
+    assert.equal(responses, 2);
     if (phase === 'create') {
       assert.equal(fs.readFileSync('probe-files/saved', 'utf8'), 'durable');
       assert.deepEqual(fs.readdirSync('probe-files'), ['saved']);

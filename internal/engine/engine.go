@@ -15,11 +15,10 @@ import (
 	"unicode/utf8"
 )
 
-// Runner runs one model step. Return an emoji only if canReact is true.
-// Call progress at most once during Run, with a model-written update, and
-// return any callback error.
+// Runner runs one model step. Call progress at most once during Run, with a
+// model-written update, and return any callback error.
 type Runner interface {
-	Run(ctx context.Context, prompt string, canReact bool, progress func(string) error) (text, emoji string, err error)
+	Run(ctx context.Context, prompt string, progress func(string) error) (string, error)
 }
 
 type activeStep struct {
@@ -37,7 +36,6 @@ type Engine struct {
 	lastUpdate  time.Time
 	failed      error
 	runner      Runner
-	typing      func(context.Context) error
 	active      *activeStep
 	working     bool
 	delivering  bool
@@ -47,9 +45,8 @@ type Engine struct {
 	stepTimeout time.Duration
 }
 
-// Open loads or initializes the durable snapshot. Pass nil to omit typing
-// indicators. A typing sender must return when its context is canceled.
-func Open(stateDir string, runner Runner, typing func(context.Context) error) (*Engine, error) {
+// Open loads or initializes the durable snapshot.
+func Open(stateDir string, runner Runner) (*Engine, error) {
 	if runner == nil || stateDir == "" {
 		return nil, errors.New("engine requires a state directory and runner")
 	}
@@ -74,7 +71,7 @@ func Open(stateDir string, runner Runner, typing func(context.Context) error) (*
 		return nil, fmt.Errorf("load engine state: %w", err)
 	}
 	e := &Engine{
-		dir: dir, lock: lock, state: s, offset: s.Offset, lastUpdate: s.LastUpdate, runner: runner, typing: typing,
+		dir: dir, lock: lock, state: s, offset: s.Offset, lastUpdate: s.LastUpdate, runner: runner,
 		workWake: make(chan struct{}, 1), sendWake: make(chan struct{}, 1),
 		now: time.Now, stepTimeout: 5 * time.Minute,
 	}
@@ -123,9 +120,8 @@ func (e *Engine) Offset() int64 {
 }
 
 // Accept saves an update and its effects before returning success. Call it
-// in update ID order. Pass empty text to save only the cursor and a message ID
-// of zero if there is no reaction target.
-func (e *Engine) Accept(updateID, messageID int64, text string) error {
+// in update ID order. Pass empty text to save only the cursor.
+func (e *Engine) Accept(updateID int64, text string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.failed != nil {
@@ -141,16 +137,13 @@ func (e *Engine) Accept(updateID, messageID int64, text string) error {
 	if updateID < e.nextOffset(now) {
 		return nil
 	}
-	if messageID < 0 {
-		return errors.New("invalid Telegram message ID")
-	}
 	if !utf8.ValidString(text) {
 		return errors.New("invalid Telegram message encoding")
 	}
 	return e.commit(func(s *state) {
 		s.Offset, s.LastUpdate = updateID+1, now
 		if strings.TrimSpace(text) != "" {
-			e.acceptText(s, messageID, text)
+			e.acceptText(s, text)
 		}
 	})
 }

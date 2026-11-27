@@ -20,8 +20,6 @@ type rpc struct {
 	ID     json.RawMessage `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  json.RawMessage `json:"error,omitempty"`
 }
 
 func (f *fixture) codex(w http.ResponseWriter, r *http.Request) {
@@ -77,17 +75,14 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 		return err
 	}
 	var start struct {
-		Model        string `json:"model"`
-		Provider     string `json:"modelProvider"`
-		Permissions  string `json:"permissions"`
-		CWD          string `json:"cwd"`
-		Approval     string `json:"approvalPolicy"`
-		Ephemeral    bool   `json:"ephemeral"`
-		Instructions string `json:"developerInstructions"`
-		Tools        []struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
-		} `json:"dynamicTools"`
+		Model        string          `json:"model"`
+		Provider     string          `json:"modelProvider"`
+		Permissions  string          `json:"permissions"`
+		CWD          string          `json:"cwd"`
+		Approval     string          `json:"approvalPolicy"`
+		Ephemeral    bool            `json:"ephemeral"`
+		Instructions string          `json:"developerInstructions"`
+		Tools        json.RawMessage `json:"dynamicTools"`
 	}
 	m, err = read("thread/start", &start)
 	if err != nil {
@@ -95,6 +90,9 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	}
 	if start.Model != model || start.Provider != "openai" || start.Permissions != "companion-workspace" || start.CWD != "/workspace" || start.Approval != "never" || !start.Ephemeral {
 		return fmt.Errorf("wrong model or thread restrictions: %s", m.Params)
+	}
+	if len(start.Tools) != 0 {
+		return fmt.Errorf("thread/start must omit dynamic tools")
 	}
 	for _, want := range []string{"/workspace/notes", "without waiting for a request", "one Markdown file per topic", "Handle note requests in ordinary conversation."} {
 		if !strings.Contains(start.Instructions, want) {
@@ -139,9 +137,6 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 	if err := json.Unmarshal([]byte("{"+data), &p); err != nil {
 		return fmt.Errorf("invalid Companion turn context: %w", err)
 	}
-	if len(start.Tools) != 1 || start.Tools[0].Type != "function" || start.Tools[0].Name != "telegram_react" {
-		return fmt.Errorf("expected only the Telegram reaction tool: %+v", start.Tools)
-	}
 	if err := reply(m, fields{"turn": fields{"id": turn, "status": "inProgress"}}); err != nil {
 		return err
 	}
@@ -172,22 +167,6 @@ func (f *fixture) session(ctx context.Context, ws *websocket.Conn) error {
 			return ctx.Err()
 		}
 	}
-	if name == "hello-fixture" || name == "reaction-only-fixture" {
-		if err := wsjson.Write(ctx, ws, fields{"id": 100, "method": "item/tool/call", "params": fields{
-			"threadId": thread, "turnId": turn, "callId": "fixture-call", "namespace": nil,
-			"tool": "telegram_react", "arguments": fields{"emoji": "👍"},
-		}}); err != nil {
-			return err
-		}
-		m, err := read("", nil)
-		if err != nil {
-			return err
-		}
-		var result struct{ Success bool }
-		if string(m.ID) != "100" || json.Unmarshal(m.Result, &result) != nil || !result.Success {
-			return fmt.Errorf("reaction tool failed: %+v", m)
-		}
-	}
 	final, err := scriptedAnswer(p)
 	if err != nil {
 		return err
@@ -208,8 +187,6 @@ func scriptedAnswer(p prompt) (string, error) {
 	switch name {
 	case "hello-fixture":
 		return "fixture conversation reply", nil
-	case "reaction-only-fixture":
-		return "NO_REPLY", nil
 	case "Remember that I prefer short summaries.":
 		return "fixture note request", nil
 	case "restart-fixture":

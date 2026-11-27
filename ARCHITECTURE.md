@@ -9,7 +9,7 @@ See [README.md](README.md) for setup and [GLOSSARY.md](GLOSSARY.md) for terms.
 ```mermaid
 flowchart LR
     User[Private Telegram chat] <--> TG[Telegram Bot API]
-    TG <-->|HTTPS: getUpdates / sendMessage / setMessageReaction / sendChatAction| App[Go app]
+    TG <-->|HTTPS: getUpdates / sendMessage| App[Go app]
     App <-->|Loopback WebSocket: turns| Runner[Codex app-server]
     App <--> State[(State volume)]
     Config[Read-only Companion config] --> App
@@ -23,9 +23,9 @@ flowchart LR
 | Component | Responsibility | Source |
 | --- | --- | --- |
 | App entry point | Validate configuration and supervise the service loops. | [`main.go`](main.go), [`config.go`](config.go) |
-| Telegram client | Poll for text updates from the configured private chat. Send plain text, reactions, and typing indicators. | [`internal/telegram`](internal/telegram) |
+| Telegram client | Poll for text updates from the configured private chat. Send plain-text replies. | [`internal/telegram`](internal/telegram) |
 | Engine | Handle commands, save state, select work, build prompts, and drain the outbox. | [`internal/engine`](internal/engine) |
-| Codex client | Run one ephemeral app-server turn and return the final text and any reaction request. | [`internal/codex`](internal/codex) |
+| Codex client | Run one ephemeral app-server turn and return the final text. | [`internal/codex`](internal/codex) |
 
 [Compose](compose.yaml) runs two services with separate filesystems. The app joins the runner's network namespace to reach `ws://127.0.0.1:4500`. Neither service publishes a port. The runner joins a Docker bridge with egress, which also lets the app reach Telegram. If you replace the runner, recreate the app so that it joins the new network namespace.
 
@@ -48,14 +48,14 @@ On `SIGINT` or `SIGTERM`, or when a loop exits, the supervisor cancels the share
 
 ## 3. Durable state and commit boundary
 
-The app uses one versioned JSON snapshot, not a database or a Codex session. [`state.go`](internal/engine/state.go) defines version `3` and validates the snapshot at load time. The app rejects older versions.
+The app uses one versioned JSON snapshot, not a database or a Codex session. [`state.go`](internal/engine/state.go) defines version `4` and validates the snapshot at load time. The app rejects older versions.
 
 | Record | Contents |
 | --- | --- |
 | Telegram cursor | Next update ID and time of the last saved update. |
-| Pending requests | Text and Telegram message ID for each request that does not have a saved outcome. |
+| Pending requests | Text for each request that does not have a saved outcome. |
 | Conversation history | User text and the assistant reply, if any, for each finished request. |
-| Outbox and incidents | Queued text or reactions, confirmed text byte position, send-in-progress marker, retry time, and records of failed or uncertain deliveries. |
+| Outbox and incidents | Queued text, confirmed text byte position, send-in-progress marker, retry time, and records of failed or uncertain deliveries. |
 
 For each commit, the engine changes state under its mutex. It writes the snapshot to a temporary file in the state directory, syncs and closes the file, renames it to `state.json`, and syncs the directory. Only then does it publish the new Telegram cursor. A save error stops the engine and cancels the active step. The app does not acknowledge an update on the basis of a failed save.
 
@@ -63,16 +63,16 @@ A snapshot commit can include an update and all its state changes. It cannot inc
 
 ### Edit old development state
 
-Stop the app and make a private backup of `state.json`. Edit only the working copy. For version `2` state:
+Stop the app and make a private backup of `state.json`. Edit only the working copy. For version `3` state:
 
-1. Set `version` to `3` and add a `pending` array. To keep unfinished chat requests, copy the `ready` and `running` entries of kind `conversation` or `one-time` into `pending`, in ascending order by `id`. Copy only `text` and `message_id` (if present). Do not copy schedules.
-2. Remove any history record that has the `task_id` of a request copied into `pending`. Remove `task_id` from the other history records. Keep the user text and saved replies.
-3. Remove `tasks`, `task_sequence`, and `notebook`. Keep the Telegram cursor, outbox, and delivery incidents. Start the app again and check `/status`.
+1. Remove `message_id` from each item in `pending`.
+2. Remove entries with an `emoji` from `outbox` and `delivery_incidents` (for an incident, check its `delivery` object). Keep text deliveries and their send state.
+3. Keep the Telegram cursor and history. Set `version` to `4`. Start the app again and check `/status`.
 
 ## 4. Telegram input and command routing
 
 1. The Telegram client calls `getUpdates` with the saved offset, a 25-second long-poll timeout, and a batch limit of 25. It sorts updates by ID and skips non-positive IDs and IDs below the current cursor.
-2. It only passes text and its Telegram message ID to the engine when `chat.id` matches the configured ID and `chat.type` is `private`. Other updates can advance the cursor but cannot create work.
+2. It only passes text to the engine when `chat.id` matches the configured ID and `chat.type` is `private`. Other updates can advance the cursor but cannot create work.
 3. The engine saves `update_id + 1` with the changes and replies from the update. The next poll uses that offset to acknowledge earlier updates. After six days without a saved update, the engine requests offset `0` because Telegram can start a new ID sequence.
 
 The app adds plain text to the pending queue. It handles slash commands locally:
@@ -86,7 +86,7 @@ The Telegram client uses a 40-second HTTP timeout and does not follow redirects.
 
 ## 5. Request queue and memory
 
-The worker runs requests in the order it receives them. The active request stays at the head of the saved queue. Each step has a five-minute timeout. On success, one commit removes the request, saves the conversation turn, and adds the reply or reaction to the outbox. A model error or timeout removes the request, saves the user text without an assistant reply, and queues an error message. The worker then takes the next request. It does not retry a model error automatically.
+The worker runs requests in the order it receives them. The active request stays at the head of the saved queue. Each step has a five-minute timeout. On success, one commit removes the request, saves the conversation turn, and adds the reply to the outbox. A model error or timeout removes the request, saves the user text without an assistant reply, and queues an error message. The worker then takes the next request. It does not retry a model error automatically.
 
 Each prompt includes the current request and up to 20 earlier conversation records.
 
@@ -96,11 +96,9 @@ Codex receives developer instructions to consult and maintain notes in `/workspa
 
 The [Codex client](internal/codex/client.go) opens one WebSocket per step. It sends `initialize` and `initialized`, checks Linux and `CODEX_HOME`, and looks for the exact configured model in the OpenAI `model/list` catalog. It requests a fresh ephemeral `thread/start` with provider fallback disabled. It checks the reported model, local environment, workspace roots, permission profile, approval policy, and that the shell has network access before sending `turn/start`.
 
-The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time and buffers a limited set of early turn notifications and tool calls until it knows the turn ID. App-server runs native tools directly. The client accepts only `telegram_react` for an active turn with a saved Telegram message ID. It rejects other server requests, including approval requests.
+The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time and buffers a limited set of early turn notifications until it knows the turn ID. App-server runs native tools directly. The client rejects all server requests, including approval requests.
 
-`telegram_react` accepts one supported emoji and no target parameters. The app uses the configured chat and the message that supplied the current request. The engine queues the reaction only if the step succeeds.
-
-The client returns the final assistant text, or the last assistant message if app-server did not mark a final answer. The agent can request a reaction without a text reply. The client does not stream partial text to Telegram.
+The client returns the final assistant text, or the last assistant message if app-server did not mark a final answer. The client does not stream partial text to Telegram.
 
 The client rejects model changes and reroutes. It does not retry turns or select a fallback model. On cancellation or an early error with a known turn ID, it attempts `turn/interrupt` for up to one second. Neither an interrupt nor a WebSocket close proves that a native tool stopped. See the [runner contract](internal/codex/README.md) for protocol and account limits.
 
@@ -114,13 +112,13 @@ The shell boundary does not control app-server network requests. Native live web
 
 ## 8. Telegram output and delivery
 
-During a model step, the app sends a best-effort `sendChatAction` request at the start and every four seconds. Typing requests have a two-second timeout and bypass the outbox. The prompt asks the model to send one short commentary message when it expects the work to take time. For the active step, the engine queues that message in the outbox and lets the same turn continue. There is no timer for progress text. The update does not enter conversation history.
+The prompt asks the model to send one short commentary message when it expects the work to take time. For the active step, the engine queues that message in the outbox and lets the same turn continue. There is no timer for progress text. The update does not enter conversation history.
 
-The outbox is first-in, first-out. The delivery loop splits messages at up to 4,096 UTF-16 code units without splitting a Unicode code point. It sends plain text with link previews disabled. It sends each reaction in one `setMessageReaction` request.
+The outbox is first-in, first-out. The delivery loop splits messages at up to 4,096 UTF-16 code units without splitting a Unicode code point. It sends plain text with link previews disabled.
 
-Before each text part or reaction, the loop saves `sending`. A Telegram message ID confirms text acceptance, and a `true` result confirms reaction acceptance. Neither result confirms that the user saw it. The engine advances the confirmed text byte position or removes the completed entry. On a definite temporary rejection, it saves an exponential retry delay of up to one minute, unless Telegram supplies a longer delay. A delayed entry holds its place in the queue.
+Before each text part, the loop saves `sending`. A Telegram message ID confirms that Telegram accepted the text. It does not confirm that the user saw it. The engine advances the confirmed text byte position or removes the completed entry. On a definite temporary rejection, it saves an exponential retry delay of up to one minute, unless Telegram supplies a longer delay. A delayed entry holds its place in the queue.
 
-On a permanent rejection or an unknown result, the engine records a delivery incident and replaces the rest of the entry with a notice. A disconnect, a timeout, or a restart with `sending` still set can make the result unknown. The engine does not resend the uncertain text part or reaction. If the notice also fails permanently or has an unknown result, the engine records the failure without generating a second notice. If you missed a reply, ask Companion to repeat it.
+On a permanent rejection or an unknown result, the engine records a delivery incident and replaces the rest of the entry with a notice. A disconnect, a timeout, or a restart with `sending` still set can make the result unknown. The engine does not resend the uncertain text part. If the notice also fails permanently or has an unknown result, the engine records the failure without generating a second notice. If you missed a reply, ask Companion to repeat it.
 
 ## 9. Shutdown and recovery
 
@@ -128,7 +126,7 @@ On a permanent rejection or an unknown result, the engine records a delivery inc
 | --- | --- |
 | An update and its effects were committed | Resume polling from the saved cursor. |
 | A request is still pending | Start a new ephemeral step. Partial output is not a checkpoint. The prompt tells the agent to check the workspace before it repeats work. |
-| A text part or reaction was marked `sending` | Record an uncertain delivery and queue a notice. Resume other deliveries from their confirmed positions and saved retry times. |
+| A text part was marked `sending` | Record an uncertain delivery and queue a notice. Resume other deliveries from their confirmed positions and saved retry times. |
 
 The app does not provide exactly-once execution for model turns, native tools, or Telegram delivery. The state-volume lock prevents two engines from writing one snapshot. It does not coordinate separate deployments.
 

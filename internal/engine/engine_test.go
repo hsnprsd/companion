@@ -13,16 +13,15 @@ import (
 
 type runnerFunc func(context.Context, string) (string, error)
 
-func (r runnerFunc) Run(ctx context.Context, prompt string, _ bool, _ func(string) error) (string, string, error) {
-	text, err := r(ctx, prompt)
-	return text, "", err
+func (r runnerFunc) Run(ctx context.Context, prompt string, _ func(string) error) (string, error) {
+	return r(ctx, prompt)
 }
 
 var echoRunner runnerFunc = func(context.Context, string) (string, error) { return "done", nil }
 
 func openEngine(t *testing.T, dir string, r Runner) *Engine {
 	t.Helper()
-	e, err := Open(dir, r, nil)
+	e, err := Open(dir, r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +38,7 @@ func closeEngine(t *testing.T, e *Engine) {
 
 func acceptUpdate(t *testing.T, e *Engine, id int64, text string) {
 	t.Helper()
-	if err := e.Accept(id, 0, text); err != nil {
+	if err := e.Accept(id, text); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -119,7 +118,7 @@ func receive[T any](t *testing.T, ch <-chan T) T {
 func TestAcceptCursorAndStateLock(t *testing.T) {
 	dir := t.TempDir()
 	e := openEngine(t, dir, echoRunner)
-	if other, err := Open(dir, echoRunner, nil); err == nil {
+	if other, err := Open(dir, echoRunner); err == nil {
 		closeEngine(t, other)
 		t.Fatal("second engine opened the same directory")
 	}
@@ -131,7 +130,7 @@ func TestAcceptCursorAndStateLock(t *testing.T) {
 		t.Fatalf("cursor and effects were not saved together: %+v", s)
 	}
 	closeEngine(t, e)
-	if err := e.Accept(103, 0, "after close"); err == nil {
+	if err := e.Accept(103, "after close"); err == nil {
 		t.Fatal("closed engine accepted an update")
 	}
 	e = openEngine(t, dir, echoRunner)
@@ -153,18 +152,18 @@ func TestAcceptCursorAndStateLock(t *testing.T) {
 func TestOpenRejectsOldSnapshotWithoutChangingIt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	const old = `{"version":2,"tasks":{},"notebook":{}}`
+	const old = `{"version":3,"pending":[],"history":[],"outbox":[]}`
 	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if e, err := Open(dir, echoRunner, nil); err == nil {
+	if e, err := Open(dir, echoRunner); err == nil {
 		closeEngine(t, e)
-		t.Fatal("opened a version 2 snapshot")
-	} else if !strings.Contains(err.Error(), "unsupported engine state version 2") {
+		t.Fatal("opened a version 3 snapshot")
+	} else if !strings.Contains(err.Error(), "unsupported engine state version 3") {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != old {
-		t.Fatalf("version 2 state changed: %s, %v", data, err)
+		t.Fatalf("version 3 state changed: %s, %v", data, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
@@ -181,7 +180,7 @@ func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(e.dir, "state.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := e.Accept(7, 0, "must not run")
+	err := e.Accept(7, "must not run")
 	if err == nil || e.Offset() != 0 {
 		t.Fatalf("failed Accept returned %v, offset %d", err, e.Offset())
 	}
@@ -191,7 +190,7 @@ func TestAcceptDoesNotAcknowledgeFailedSave(t *testing.T) {
 	if got := e.Deliver(context.Background(), func(context.Context, string) error {
 		t.Error("sent a reply for an unsaved update")
 		return nil
-	}, noReaction(t)); got != err {
+	}); got != err {
 		t.Fatalf("Deliver returned %v after failed save, want %v", got, err)
 	}
 }

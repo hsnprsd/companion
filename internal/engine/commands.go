@@ -9,10 +9,10 @@ const helpText = `Send a message to ask a question, request work, or manage note
 /help — Show commands.
 /status — Check whether Companion is working.`
 
-func (e *Engine) acceptText(s *state, messageID int64, text string) {
+func (e *Engine) acceptText(s *state, text string) {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, "/") {
-		s.Pending = append(s.Pending, request{Text: text, MessageID: messageID})
+		s.Pending = append(s.Pending, request{Text: text})
 		return
 	}
 	cmd := strings.Fields(trimmed)[0]

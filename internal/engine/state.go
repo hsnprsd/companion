@@ -11,11 +11,10 @@ import (
 	"unicode/utf8"
 )
 
-const stateVersion = 3
+const stateVersion = 4
 
 type request struct {
-	Text      string `json:"text"`
-	MessageID int64  `json:"message_id,omitempty"`
+	Text string `json:"text"`
 }
 
 type turn struct {
@@ -24,9 +23,7 @@ type turn struct {
 }
 
 type delivery struct {
-	Text      string    `json:"text,omitempty"`
-	MessageID int64     `json:"message_id,omitempty"`
-	Emoji     string    `json:"emoji,omitempty"`
+	Text      string    `json:"text"`
 	Sent      int       `json:"sent_bytes,omitempty"`
 	Sending   bool      `json:"sending,omitempty"`
 	Failures  int       `json:"failures,omitempty"`
@@ -65,7 +62,7 @@ func load(dir string) (state, error) {
 		return state{}, fmt.Errorf("unsupported engine state version %d; expected %d", s.Version, stateVersion)
 	}
 	for i, r := range s.Pending {
-		if strings.TrimSpace(r.Text) == "" || r.MessageID < 0 {
+		if strings.TrimSpace(r.Text) == "" {
 			return state{}, fmt.Errorf("invalid pending request %d in engine state", i)
 		}
 	}
@@ -78,10 +75,7 @@ func load(dir string) (state, error) {
 }
 
 func (d delivery) validPayload() bool {
-	if d.Emoji != "" {
-		return d.MessageID > 0 && d.Text == "" && d.Sent == 0 && !d.Notice
-	}
-	return d.MessageID == 0 && d.Sent >= 0 && d.Sent < len(d.Text) && utf8.RuneStart(d.Text[d.Sent])
+	return d.Sent >= 0 && d.Sent < len(d.Text) && utf8.RuneStart(d.Text[d.Sent])
 }
 
 func ensureStateDir(dir string) error {

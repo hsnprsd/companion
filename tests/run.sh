@@ -52,21 +52,19 @@ send_chat() {
 send() { send_chat "$chat" private "$1"; }
 acked() { fx offset "$next"; }
 
-printf '%s\n' 'Check filtering, deduplication, conversation, and reactions.'
+printf '%s\n' 'Check filtering, deduplication, and conversation.'
 test "$(app id -u)" = 1000
 app test ! -e /workspace
 send_chat 9876543211 private 'wrong-chat-fixture'
 send_chat "$chat" supergroup 'wrong-type-fixture'
-hello_id=$((next + 1000))
 send 'hello-fixture'
 acked
-fx wait reactions "$hello_id:👍" 1
 wait_message 'fixture conversation reply'
 fx replay 102 "$chat" private 'hello-fixture'
 send '/status'
 wait_message 'Companion is idle.'
 count_is turns 'hello-fixture' 1
-count_is reactions '' 1
+count_is messages 'fixture conversation reply' 1
 
 printf '%s\n' 'Check that the removed commands do not create work.'
 for command in '/grant manual' '/revoke manual' '/access' '/approve 1' '/deny 1' '/note color amber' '/notes' '/forget color' '/work removed-fixture' \
@@ -98,22 +96,12 @@ wait_message 'Send a message to ask a question, request work, or manage notes.'
 count_is turns 'Remember that I prefer short summaries.' 1
 count_is messages 'fixture resumed result' 1
 
-printf '%s\n' 'Check a reaction without a text reply.'
-reaction_id=$((next + 1000))
-send 'reaction-only-fixture'
-acked
-fx wait reactions "$reaction_id:👍" 1
-count_is messages 'NO_REPLY' 0
-count_is reactions '' 2
-
-printf '%s\n' 'Check status, typing, and the progress reply during slow work.'
-typing_before=$(fx count actions typing)
+printf '%s\n' 'Check status and the progress reply during slow work.'
 progress='I will inspect the fixture files.'
 send 'slow-fixture'
 wait_message "$progress"
 send '/status'
 wait_message 'Companion is working on a request.' 2
-fx wait actions typing "$((typing_before + 2))"
 wait_message 'fixture full answer'
 count_is messages "$progress" 1
 count_is turns 'slow-fixture' 1

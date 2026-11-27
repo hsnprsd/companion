@@ -40,16 +40,16 @@ func (c Client) restrictions() params {
 	}
 }
 
-// Run returns the final text and optional Telegram reaction from a fresh
-// ephemeral thread. It forwards at most one completed commentary message to
-// progress before the final answer. Pass nil to omit commentary.
-func (c Client) Run(ctx context.Context, prompt string, canReact bool, progress func(string) error) (text, emoji string, err error) {
+// Run returns the final text from a fresh ephemeral thread. It forwards at
+// most one completed commentary message to progress before the final answer.
+// Pass nil to omit commentary.
+func (c Client) Run(ctx context.Context, prompt string, progress func(string) error) (string, error) {
 	if c.Model == "" || strings.TrimSpace(c.Model) != c.Model {
-		return "", "", errors.New("codex: specify an exact model ID")
+		return "", errors.New("codex: specify an exact model ID")
 	}
 	s, err := connect(ctx, c.URL)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	defer s.close()
 
@@ -61,16 +61,16 @@ func (c Client) Run(ctx context.Context, prompt string, canReact bool, progress 
 		"clientInfo":   params{"name": "companion", "title": "Companion", "version": "0.1.0"},
 		"capabilities": params{"experimentalApi": true, "requestAttestation": false},
 	}, &init, nil); err != nil {
-		return "", "", err
+		return "", err
 	}
 	if init.CodexHome != codexHome || init.PlatformOS != "linux" {
-		return "", "", errors.New("codex: unexpected runner platform or CODEX_HOME")
+		return "", errors.New("codex: unexpected runner platform or CODEX_HOME")
 	}
 	if err := s.send(ctx, message{Method: "initialized"}); err != nil {
-		return "", "", err
+		return "", err
 	}
 	if err := c.checkCatalog(ctx, s); err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	start := c.restrictions()
@@ -78,9 +78,6 @@ func (c Client) Run(ctx context.Context, prompt string, canReact bool, progress 
 	start["modelProvider"] = provider
 	start["allowProviderModelFallback"] = false
 	start["developerInstructions"] = workspaceNotesInstructions
-	if canReact {
-		start["dynamicTools"] = []params{reactionTool()}
-	}
 	// Responses Lite uses the native standalone search extension.
 	start["config"] = params{"web_search": "live", "features": params{"standalone_web_search": true}}
 	var started struct {
@@ -111,10 +108,10 @@ func (c Client) Run(ctx context.Context, prompt string, canReact bool, progress 
 		} `json:"activePermissionProfile"`
 	}
 	if err := s.request(ctx, "thread/start", start, &started, nil); err != nil {
-		return "", "", err
+		return "", err
 	}
 	if started.Model != c.Model || (started.Thread.Model != nil && *started.Thread.Model != c.Model) || started.ModelProvider != provider {
-		return "", "", fmt.Errorf("codex: app-server did not select configured model %q", c.Model)
+		return "", fmt.Errorf("codex: app-server did not select configured model %q", c.Model)
 	}
 	if started.Thread.ID == "" || !started.Thread.Ephemeral || len(started.Thread.Environments) != 1 ||
 		started.Thread.Environments[0].ID != "local" || started.Thread.Environments[0].CWD != workspaceDir ||
@@ -123,21 +120,17 @@ func (c Client) Run(ctx context.Context, prompt string, canReact bool, progress 
 		started.Sandbox.Type != "workspaceWrite" || started.Sandbox.NetworkAccess == nil || !*started.Sandbox.NetworkAccess ||
 		!started.Sandbox.ExcludeSlashTmp || !started.Sandbox.ExcludeTmpdirEnvVar ||
 		(len(started.Sandbox.WritableRoots) != 0 && (len(started.Sandbox.WritableRoots) != 1 || started.Sandbox.WritableRoots[0] != workspaceDir)) {
-		return "", "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
+		return "", errors.New("codex: app-server did not confirm restricted ephemeral thread settings")
 	}
 
-	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, canReact: canReact, progress: progress}
+	t := turnRun{s: s, threadID: started.Thread.ID, model: c.Model, progress: progress}
 	turn := c.restrictions()
 	turn["threadId"] = t.threadID
 	turn["input"] = []params{{"type": "text", "text": prompt, "text_elements": []any{}}}
 	if c.ThinkingLevel != "" {
 		turn["effort"] = c.ThinkingLevel
 	}
-	text, err = t.run(ctx, turn)
-	if err != nil {
-		return "", "", err
-	}
-	return text, t.reaction, nil
+	return t.run(ctx, turn)
 }
 
 func (c Client) checkCatalog(ctx context.Context, s *session) error {
@@ -186,9 +179,8 @@ type turnRun struct {
 	threadID, turnID string
 	model            string
 	final, last      string
-	reaction         string
 	progress         func(string) error
-	canReact, done   bool
+	done             bool
 }
 
 type threadItem struct {
@@ -218,7 +210,7 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 	var pending []message
 	size := 0
 	if err := t.s.request(ctx, "turn/start", p, &started, func(m message) error {
-		if !turnEvent(m) && !(t.canReact && len(m.ID) != 0 && m.Method == "item/tool/call") {
+		if !turnEvent(m) {
 			if len(m.ID) != 0 {
 				return t.s.reject(ctx, m, -32601, "server request not allowed")
 			}
@@ -259,9 +251,6 @@ func (t *turnRun) run(ctx context.Context, p params) (string, error) {
 	if text == "" {
 		text = t.last
 	}
-	if t.reaction != "" && (text == "" || strings.TrimSpace(text) == "NO_REPLY") {
-		return "", nil
-	}
 	if text == "" {
 		return "", errors.New("codex: turn completed without an assistant answer")
 	}
@@ -284,9 +273,6 @@ func (t *turnRun) dispatch(ctx context.Context, m message) error {
 		return nil
 	}
 	if len(m.ID) != 0 {
-		if m.Method == "item/tool/call" && t.canReact && !t.done {
-			return t.react(ctx, m)
-		}
 		return t.s.reject(ctx, m, -32601, "server request not allowed")
 	}
 	if !turnEvent(m) {

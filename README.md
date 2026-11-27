@@ -13,11 +13,9 @@ Use Companion in a private Telegram chat to ask questions, work with files, and 
 
 Companion handles requests in the order it receives them. If Companion restarts before it saves a result, it starts the pending request again. If Companion reports an error, check for partial file changes before you send the request again.
 
-Telegram shows a typing indicator while Companion works. If Companion expects a request to take time, it can send a short update about what it plans to do. It continues working and sends the full answer separately. There is no fixed wait before an update. Send `/status` to see if Companion is working or if requests are in the queue.
+If Companion expects a request to take time, it can send a short update about what it plans to do. It continues working and sends the full answer separately. There is no fixed wait before an update. Send `/status` to see if Companion is working or if requests are in the queue.
 
 Companion can save useful details and refer to them later without a request from you. To ask it to save a note, send `Remember that I prefer a short summary first.` To see saved notes, ask `What preferences did you save for me?` To remove a note, ask `Forget my preference for a short summary.` Removing a note does not delete chat history.
-
-Companion can react to the current message, but not to an older message. Try `React to this message with 👍 and do not send a text reply.`
 
 ## Set up Companion
 

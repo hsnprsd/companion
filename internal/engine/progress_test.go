@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -11,9 +10,8 @@ import (
 
 type progressRunner func(context.Context, func(string) error) (string, error)
 
-func (r progressRunner) Run(ctx context.Context, _ string, _ bool, progress func(string) error) (string, string, error) {
-	text, err := r(ctx, progress)
-	return text, "", err
+func (r progressRunner) Run(ctx context.Context, _ string, progress func(string) error) (string, error) {
+	return r(ctx, progress)
 }
 
 func TestWorkDeliversModelProgressAndThenResult(t *testing.T) {
@@ -38,17 +36,12 @@ func TestWorkDeliversModelProgressAndThenResult(t *testing.T) {
 			}
 		})
 		e := openEngine(t, t.TempDir(), r)
-		var typingCalls atomic.Int32
-		e.typing = func(context.Context) error {
-			typingCalls.Add(1)
-			return errors.New("fixture typing error")
-		}
 		sent := make(chan string, 10)
 		stopDelivery := startLoop(t, func(ctx context.Context) error {
 			return e.Deliver(ctx, func(_ context.Context, text string) error {
 				sent <- text
 				return nil
-			}, noReaction(t))
+			})
 		})
 		defer stopDelivery()
 		wantMessage := func(want string) {
@@ -67,14 +60,10 @@ func TestWorkDeliversModelProgressAndThenResult(t *testing.T) {
 		receive(t, started)
 		acceptUpdate(t, e, 4, "/status")
 		wantMessage("Companion is working on a request.")
+		time.Sleep(15 * time.Second)
 		synctest.Wait()
-		if calls := typingCalls.Load(); calls != 1 {
-			t.Fatalf("typing calls at start = %d, want 1", calls)
-		}
-		time.Sleep(3 * typingInterval)
-		synctest.Wait()
-		if calls := typingCalls.Load(); calls != 4 || len(sent) != 0 {
-			t.Fatalf("before model update: typing calls = %d, automatic replies = %d", calls, len(sent))
+		if len(sent) != 0 {
+			t.Fatalf("automatic replies before model update = %d, want 0", len(sent))
 		}
 		close(report)
 		wantMessage(update)
@@ -83,18 +72,16 @@ func TestWorkDeliversModelProgressAndThenResult(t *testing.T) {
 		}
 		close(finish)
 		wantMessage("Full answer")
-		synctest.Wait()
-		calls := typingCalls.Load()
-		time.Sleep(2 * typingInterval)
-		synctest.Wait()
-		if typingCalls.Load() != calls || stored(t, e).History[0].Assistant != "Full answer" {
-			t.Fatal("typing continued or the final answer was not saved")
+		if s := stored(t, e); len(s.History) != 1 || s.History[0].Assistant != "Full answer" {
+			t.Fatal("the final answer was not saved")
 		}
 	})
 }
 
-func TestShutdownStopsTypingAndDiscardsLateProgress(t *testing.T) {
+func TestShutdownDiscardsLateProgress(t *testing.T) {
+	started := make(chan struct{})
 	r := progressRunner(func(ctx context.Context, progress func(string) error) (string, error) {
+		close(started)
 		<-ctx.Done()
 		if err := progress("Late update"); !errors.Is(err, context.Canceled) {
 			t.Errorf("progress after cancellation returned %v", err)
@@ -102,18 +89,10 @@ func TestShutdownStopsTypingAndDiscardsLateProgress(t *testing.T) {
 		return "", ctx.Err()
 	})
 	e := openEngine(t, t.TempDir(), r)
-	typing, canceled := make(chan struct{}), make(chan struct{})
-	e.typing = func(ctx context.Context) error {
-		close(typing)
-		<-ctx.Done()
-		close(canceled)
-		return ctx.Err()
-	}
 	acceptUpdate(t, e, 1, "run")
 	stopWork := startLoop(t, e.Work)
-	receive(t, typing)
+	receive(t, started)
 	stopWork()
-	receive(t, canceled)
 	if s := stored(t, e); len(s.Outbox) != 0 || len(s.Pending) != 1 {
 		t.Fatalf("canceled request queued a reply or was removed: %+v", s)
 	}

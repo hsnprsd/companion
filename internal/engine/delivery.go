@@ -8,13 +8,13 @@ import (
 
 const telegramLimit = 4096
 
-// Deliver sends text and reactions in queue order. Return nil from send or
-// react only after Telegram confirms the request. A send error with Uncertain()
-// set to false permits retries unless Permanent() returns true. An error can
-// supply RetryAfter() time.Duration. Do not retry an unknown result.
-func (e *Engine) Deliver(ctx context.Context, send func(context.Context, string) error, react func(context.Context, int64, string) error) error {
-	if send == nil || react == nil {
-		return errors.New("engine requires text and reaction senders")
+// Deliver sends text in queue order. Return nil from send only after Telegram
+// confirms the request. A send error with Uncertain() set to false permits
+// retries unless Permanent() returns true. An error can supply RetryAfter()
+// time.Duration. Do not retry an unknown result.
+func (e *Engine) Deliver(ctx context.Context, send func(context.Context, string) error) error {
+	if send == nil {
+		return errors.New("engine requires a text sender")
 	}
 	e.mu.Lock()
 	if e.delivering || e.lock == nil {
@@ -33,7 +33,7 @@ func (e *Engine) Deliver(ctx context.Context, send func(context.Context, string)
 		if err != nil {
 			return err
 		}
-		if part.Text == "" && part.Emoji == "" {
+		if part == "" {
 			pause(ctx, e.sendWake, delay)
 			continue
 		}
@@ -46,35 +46,30 @@ func (e *Engine) Deliver(ctx context.Context, send func(context.Context, string)
 			}
 			return err
 		}
-		var sendErr error
-		if part.Emoji != "" {
-			sendErr = react(ctx, part.MessageID, part.Emoji)
-		} else {
-			sendErr = send(ctx, part.Text)
-		}
-		if err := e.finishDelivery(len(part.Text), sendErr); err != nil {
+		sendErr := send(ctx, part)
+		if err := e.finishDelivery(len(part), sendErr); err != nil {
 			return err
 		}
 	}
 }
 
-func (e *Engine) nextDelivery(ctx context.Context) (delivery, time.Duration, error) {
+func (e *Engine) nextDelivery(ctx context.Context) (string, time.Duration, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.failed != nil {
-		return delivery{}, 0, e.failed
+		return "", 0, e.failed
 	}
 	if err := ctx.Err(); err != nil {
-		return delivery{}, 0, err
+		return "", 0, err
 	}
 	if len(e.state.Outbox) == 0 {
-		return delivery{}, -1, nil
+		return "", -1, nil
 	}
 	d := &e.state.Outbox[0]
 	if delay := d.NotBefore.Sub(e.now()); delay > 0 {
-		return delivery{}, delay, nil
+		return "", delay, nil
 	}
-	part := delivery{Text: messagePart(d.Text[d.Sent:]), MessageID: d.MessageID, Emoji: d.Emoji}
+	part := messagePart(d.Text[d.Sent:])
 	err := e.commit(func(*state) { d.Sending = true })
 	return part, 0, err
 }
@@ -85,10 +80,6 @@ func (e *Engine) finishDelivery(n int, sendErr error) error {
 	return e.commit(func(s *state) {
 		d := &s.Outbox[0]
 		if sendErr == nil {
-			if d.Emoji != "" {
-				s.dropDelivery()
-				return
-			}
 			d.Sent += n
 			if d.Sent == len(d.Text) {
 				s.dropDelivery()
@@ -97,16 +88,15 @@ func (e *Engine) finishDelivery(n int, sendErr error) error {
 			}
 			return
 		}
-		kind := d.kind()
 		var outcome interface{ Uncertain() bool }
 		if !errors.As(sendErr, &outcome) || outcome.Uncertain() {
 			// Do not include transport error strings: they can contain tokens.
-			s.loseDelivery("Telegram did not confirm whether it received the " + kind)
+			s.loseDelivery("Telegram did not confirm whether it received the message")
 			return
 		}
 		var permanent interface{ Permanent() bool }
 		if errors.As(sendErr, &permanent) && permanent.Permanent() {
-			s.reportDelivery("Telegram permanently rejected the "+kind, "A "+kind+" did not reach you")
+			s.reportDelivery("Telegram permanently rejected the message", "A message did not reach you")
 			return
 		}
 		d.Failures = min(d.Failures+1, 7)
@@ -124,15 +114,8 @@ func (s *state) dropDelivery() {
 	s.Outbox = s.Outbox[1:]
 }
 
-func (d delivery) kind() string {
-	if d.Emoji != "" {
-		return "reaction"
-	}
-	return "message"
-}
-
 func (s *state) loseDelivery(reason string) {
-	s.reportDelivery(reason, "A "+s.Outbox[0].kind()+" might not have reached you")
+	s.reportDelivery(reason, "A message might not have reached you")
 }
 
 func (s *state) reportDelivery(reason, summary string) {
