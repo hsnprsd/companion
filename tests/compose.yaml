@@ -1,25 +1,23 @@
 services:
   app:
-    build:
-      context: ..
-      target: app
-    network_mode: service:fixture
+    extends: {file: ../compose.yaml, service: app}
     depends_on:
-      fixture:
-        condition: service_healthy
-    init: true
-    stop_grace_period: 30s
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    tmpfs: [/tmp]
+      fixture: {condition: service_healthy}
+    restart: 'no'
     environment:
-      COMPANION_CONFIG: /etc/companion/companion.json
-      COMPANION_STATE_DIR: /app/state
-      COMPANION_TELEGRAM_URL: http://127.0.0.1:8080
+      COMPANION_TELEGRAM_URL: http://fixture:8080
     volumes:
-      - state:/app/state
       - ${FIXTURE_DIR:?Run tests/run.sh}/companion.json:/etc/companion/companion.json:ro,Z
+    networks: [fixtures]
+
+  runner:
+    extends: {file: ../compose.yaml, service: runner}
+    depends_on:
+      fixture: {condition: service_healthy}
+    restart: 'no'
+    volumes:
+      - ${FIXTURE_DIR:?Run tests/run.sh}/models.json:/home/node/.pi/agent/models.json:ro,Z
+    networks: [fixtures]
 
   fixture:
     build:
@@ -38,6 +36,9 @@ services:
 
 volumes:
   state:
+  sockets:
+  workspace:
+  pi-auth:
 
 networks:
   fixtures:

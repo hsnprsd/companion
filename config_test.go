@@ -14,13 +14,13 @@ func TestLoadConfig(t *testing.T) {
 	const token = "123456:example_token_not_a_real_credential"
 	const prefix = `{"model":"gpt-example","tg-bot-token":"`
 	setConfigFile(t, prefix+token+`","tg-chat-id":123456}`)
-	t.Setenv("COMPANION_CODEX_URL", "ws://localhost:4500")
+	t.Setenv("COMPANION_SOCKET_DIR", "/test/socket-dir")
 	t.Setenv("COMPANION_TELEGRAM_URL", "http://localhost:4501")
 	cfg, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Token != token || cfg.Model != "gpt-example" || cfg.ChatID != 123456 {
+	if cfg.Token != token || cfg.Provider != "openai" || cfg.Model != "gpt-example" || cfg.ChatID != 123456 || cfg.SocketDir != "/test/socket-dir" {
 		t.Fatal("configuration did not match the input files")
 	}
 	setConfigFile(t, prefix+token+`","tg-chat-id":-123456}`)
@@ -30,6 +30,19 @@ func TestLoadConfig(t *testing.T) {
 	setConfigFile(t, prefix+`plausible-secret-but-invalid","tg-chat-id":123456}`)
 	if _, err = loadConfig(); err == nil || strings.Contains(err.Error(), "plausible-secret-but-invalid") {
 		t.Fatal("expected a token validation error without the input")
+	}
+}
+
+func TestLoadPiModel(t *testing.T) {
+	const settings = `,"model":"org/model:variant","tg-bot-token":"123456:example_token_not_a_real_credential","tg-chat-id":123456}`
+	setConfigFile(t, `{"provider":"example-provider"`+settings)
+	cfg, err := loadConfig()
+	if err != nil || cfg.Provider != "example-provider" || cfg.Model != "org/model:variant" {
+		t.Fatalf("unexpected provider %q, model %q, or error %v", cfg.Provider, cfg.Model, err)
+	}
+	setConfigFile(t, `{"provider":"--not-a-provider"`+settings)
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("invalid provider was accepted")
 	}
 }
 

@@ -7,4 +7,4 @@ Keep [README.md](README.md) focused on the user. Explain what users can do, how 
 - [README.md](README.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [GLOSSARY.md](GLOSSARY.md)
-- [internal/codex/README.md](internal/codex/README.md)
+- [internal/pi/README.md](internal/pi/README.md)

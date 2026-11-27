@@ -3,11 +3,9 @@ services:
     build:
       context: .
       target: app
-    # Share the network namespace so the app can reach the runner's loopback
-    # WebSocket. Agent shell commands can also reach this listener.
-    network_mode: service:codex
     depends_on:
-      - codex
+      runner:
+        condition: service_healthy
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
@@ -18,64 +16,40 @@ services:
     environment:
       COMPANION_CONFIG: /etc/companion/companion.json
       COMPANION_STATE_DIR: /app/state
-      COMPANION_CODEX_URL: ws://127.0.0.1:4500
       COMPANION_TELEGRAM_URL: ${COMPANION_TELEGRAM_URL:-https://api.telegram.org}
     volumes:
-      - type: volume
-        source: state
-        target: /app/state
+      - state:/app/state
+      - sockets:/run/companion
       - type: bind
         source: ${COMPANION_CONFIG_SOURCE:-./companion.json}
         target: /etc/companion/companion.json
         read_only: true
         bind: {create_host_path: false, selinux: Z}
 
-  codex:
+  runner:
     build:
       context: .
       target: runner
-    command:
-      - --listen
-      - ws://127.0.0.1:4500
-      - -c
-      - 'default_permissions="companion-workspace"'
-      - -c
-      - 'permissions.companion-workspace={filesystem={":minimal"="read","/workspace"="write"},network={enabled=true}}'
-      - -c
-      - 'projects."/workspace".trust_level="untrusted"'
-      - -c
-      - 'shell_environment_policy={inherit="none",set={HOME="/workspace",TMPDIR="/workspace",PATH="/usr/local/bin:/usr/bin:/bin"}}'
-      - -c
-      - 'mcp_servers={}'
-      - -c
-      - 'approval_policy="never"'
-      - -c
-      - 'cli_auth_credentials_store="file"'
     init: true
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-      - seccomp=./docker/codex-seccomp.json
+    security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
+    healthcheck:
+      test: [CMD, node, -e, 'const s = require("node:net").connect("/run/companion/runner.sock"); s.on("connect", () => s.end()); s.on("error", () => process.exit(1));']
+      interval: 2s
+      timeout: 2s
+      retries: 10
     volumes:
-      - type: volume
-        source: workspace
-        target: /workspace
-      - type: volume
-        source: codex-auth
-        target: /home/node/.codex
-        volume: {nocopy: true}
-    networks: [egress]
+      - workspace:/workspace
+      - pi-auth:/home/node/.pi/agent
+      - sockets:/run/companion
 
 volumes:
   workspace:
   state:
-  codex-auth:
+  sockets:
+  pi-auth:
     external: true
-    name: companion-codex-auth
-
-networks:
-  egress:
-    driver: bridge
+    name: companion-pi-auth

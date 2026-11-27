@@ -1,5 +1,6 @@
 {
-  "model": "gpt-6-luna",
+  "provider": "openai",
+  "model": "gpt-5.4",
   "thinking-level": "medium",
   "tg-bot-token": "replace-with-your-bot-token",
   "tg-chat-id": 0

@@ -1,6 +1,6 @@
 # Companion architecture
 
-Companion is a single-user service for one private Telegram chat. The Go app saves chat requests and delivers replies. Codex runs one model step at a time in a separate container. It uses its native tools in a durable workspace. The Go app does not mount that workspace or handle file operations.
+Companion is a single-user service for one private Telegram chat. The Go app saves chat requests and delivers replies. Pi runs one model step at a time in a separate container. It uses its native tools in a durable workspace. The Go app does not mount that workspace or handle file operations.
 
 See [README.md](README.md) for setup and [GLOSSARY.md](GLOSSARY.md) for terms.
 
@@ -10,14 +10,14 @@ See [README.md](README.md) for setup and [GLOSSARY.md](GLOSSARY.md) for terms.
 flowchart LR
     User[Private Telegram chat] <--> TG[Telegram Bot API]
     TG <-->|HTTPS: getUpdates / sendMessage| App[Go app]
-    App <-->|Loopback WebSocket: turns| Runner[Codex app-server]
+    App -->|Unix socket: run| Runner[Runner service]
+    Runner <-->|JSONL over stdin/stdout| Pi[Pi process]
+    Pi -->|Unix socket: send_message| App
     App <--> State[(State volume)]
     Config[Read-only Companion config] --> App
-    Runner <--> Auth[(Codex sign-in volume)]
-    Runner --> Shell[Sandboxed shell]
-    Shell <--> Workspace[(Workspace volume)]
-    Shell -->|Direct network requests| Network[Network]
-    Runner <-->|Model requests and native search| OpenAI[OpenAI]
+    Pi <--> Auth[(Pi sign-in volume)]
+    Pi <--> Workspace[(Workspace volume)]
+    Pi <-->|Model requests| Provider[Model provider]
 ```
 
 | Component | Responsibility | Source |
@@ -25,30 +25,31 @@ flowchart LR
 | App entry point | Validate configuration and supervise the service loops. | [`main.go`](main.go), [`config.go`](config.go) |
 | Telegram client | Poll for text updates from the configured private chat. Send plain-text replies. | [`internal/telegram`](internal/telegram) |
 | Engine | Handle commands, save state, select work, build prompts, and drain the outbox. | [`internal/engine`](internal/engine) |
-| Codex client | Run one ephemeral app-server turn and handle message tool calls. | [`internal/codex`](internal/codex) |
+| Pi bridge | Start one Pi RPC process per step and pass message tool calls to the app. | [`internal/pi`](internal/pi) |
 
-[Compose](compose.yaml) runs two services with separate filesystems. The app joins the runner's network namespace to reach `ws://127.0.0.1:4500`. Neither service publishes a port. The runner joins a Docker bridge with egress, which also lets the app reach Telegram. If you replace the runner, recreate the app so that it joins the new network namespace.
+[Compose](compose.yaml) runs two services with separate filesystems and a shared socket volume. The runner listens on `/run/companion/runner.sock`. The app and runner connect over Unix sockets, not TCP. Neither service publishes a port. The app can stay up when you replace an idle runner.
 
-The [Dockerfile](Dockerfile) builds the Go `1.27.4` app and installs Codex CLI `0.172.0` and Bubblewrap in the runner. Both services run as UID/GID `1000:1000`, with read-only container roots, all Linux capabilities dropped, `no-new-privileges`, and no Docker socket. The runner uses the repository's [seccomp profile](docker/codex-seccomp.json), based on [Moby profiles at `a0fa708`](https://github.com/moby/profiles/blob/a0fa70805f742f7da15b367770d802ea2a86c68b/seccomp/default.json). Its additions let Bubblewrap create nested namespaces and set up their mount tree. The runner does not use privileged mode or unconfined seccomp. See [the upstream license](docker/MOBY-LICENSE).
+The [Dockerfile](Dockerfile) builds the app and runner service with Go `1.27.4` and installs Pi `1.6.1` in the runner. Both services run as UID/GID `1000:1000`, with read-only container roots, all Linux capabilities dropped, `no-new-privileges`, and no Docker socket.
 
 | Data | Standard location | Access and lifetime |
 | --- | --- | --- |
-| Companion configuration | `/etc/companion/companion.json` | Read-only app bind mount. Contains the model ID, optional thinking level, Telegram bot token, and private chat ID. |
+| Companion configuration | `/etc/companion/companion.json` | Read-only app bind mount. Contains the provider and model IDs, optional thinking level, Telegram bot token, and private chat ID. |
 | App state | `/app/state` | App-only named volume. Contains `state.json` and `state.lock`. |
 | Durable workspace | `/workspace` | Runner-only named `workspace` volume. The agent can change files without approval. Files survive container replacement. |
-| Codex sign-in | `/home/node/.codex` | Runner-only external volume `companion-codex-auth`. The shell cannot read it. |
+| Pi sign-in | `/home/node/.pi/agent` | Runner-only external volume `companion-pi-auth`. Pi tools can read it. |
+| Bridge sockets | `/run/companion` | Shared `sockets` volume. Holds the runner listener and the current message callback socket. |
 
 ## 2. Startup and process lifecycle
 
-1. Load `model`, optional `thinking-level`, `tg-bot-token`, and `tg-chat-id` from the JSON config. If `thinking-level` is absent, use `medium`. If it is `null`, let Codex choose the level. The app limits the config to 4 KiB, validates the model and token formats, and requires a positive chat ID. It checks endpoint schemes and rejects credentials, query strings, and fragments in the URLs. See [Application settings](#application-settings) for the environment variables.
-2. Create the state directory if necessary, acquire an exclusive `flock` on `state.lock`, and load the snapshot. A second app cannot open the same state directory while this lock is held. The app does not contact Codex until a step needs a model.
+1. Load `model`, `provider` (default `openai`), optional `thinking-level`, `tg-bot-token`, and `tg-chat-id` from the JSON config. If `thinking-level` is absent, use `medium`. If it is `null`, let Pi choose the level. The app limits the config to 4 KiB, validates provider, model, and token formats, and requires a positive chat ID. It requires an HTTP(S) Telegram URL without credentials, a query string, or a fragment. See [Application settings](#application-settings) for the environment variables.
+2. Create the state directory if necessary, acquire an exclusive `flock` on `state.lock`, and load the snapshot. A second app cannot open the same state directory while this lock is held. The app does not request a Pi process until a step needs a model.
 3. Start three loops. Telegram `Poll` accepts updates. Engine `Work` runs one model step at a time. Engine `Deliver` sends queued messages. The engine mutex serializes state changes. The loops do not hold it during network calls. Wake channels and timers let the loops wait for state changes or deadlines.
 
 On `SIGINT` or `SIGTERM`, or when a loop exits, the supervisor cancels the shared context. It waits up to 15 seconds. Compose gives the app 30 seconds to stop. The worker stops taking requests and cancels the active model step. Cancellation does not undo changes to the workspace.
 
 ## 3. Durable state and commit boundary
 
-The app uses one versioned JSON snapshot, not a database or a Codex session. [`state.go`](internal/engine/state.go) defines version `4` and validates the snapshot at load time. The app rejects older versions.
+The app uses one versioned JSON snapshot, not a database or a Pi session. [`state.go`](internal/engine/state.go) defines version `4` and validates the snapshot at load time. The app rejects older versions.
 
 | Record | Contents |
 | --- | --- |
@@ -90,23 +91,19 @@ The worker runs requests in the order it receives them. The active request stays
 
 Each prompt includes the current request and up to 20 earlier conversation records.
 
-Codex receives developer instructions to consult and maintain notes in `/workspace/notes` on its own initiative. It uses one Markdown file per topic with descriptive names and headings. It also reads, saves, changes, or removes notes when asked in ordinary conversation. The runner reads and writes these files with its native tools. The app does not inject the files into prompts. Removing a note does not erase conversation history.
+Pi receives system instructions to consult and maintain notes in `/workspace/notes` on its own initiative. It uses one Markdown file per topic with descriptive names and headings. It also reads, saves, changes, or removes notes when asked in ordinary conversation. The runner reads and writes these files with its native tools. The app does not inject the files into prompts. Removing a note does not erase conversation history.
 
-## 6. Codex step and protocol boundary
+## 6. Pi step and message bridge
 
-The [Codex client](internal/codex/client.go) opens one WebSocket per step. It sends `initialize` and `initialized`, checks Linux and `CODEX_HOME`, and looks for the exact configured model in the OpenAI `model/list` catalog. It requests a fresh ephemeral `thread/start` with provider fallback disabled. It checks the reported model, local environment, workspace roots, permission profile, approval policy, and that the shell has network access before sending `turn/start`.
+The [Pi client](internal/pi/bridge.go) creates a callback socket for the step and sends the prompt to the runner. The runner starts a fresh `pi --mode rpc --no-session` process, checks the selected provider and model, then sends `prompt`. A successful `prompt` response is not completion. The runner waits for `agent_settled`, then stops the process. If the app disconnects, the runner cancels the process. Cancellation does not undo tool actions.
 
-The client uses JSON-RPC over WebSocket text messages. It sends one client request at a time and buffers a limited set of early turn notifications and tool requests until it knows the turn ID. App-server runs native tools directly. The client registers the `send_message` dynamic tool and accepts calls to it only for the active thread and turn. The client rejects other server requests, including approval requests.
+The `send_message` extension posts each message back to the app on the step callback socket. The app accepts messages only while that step is active. See the [runner contract](internal/pi/README.md) for the protocol and failure cases.
 
-The client rejects model changes and reroutes. It does not retry turns or select a fallback model. On cancellation or an early error with a known turn ID, it attempts `turn/interrupt` for up to one second. Neither an interrupt nor a WebSocket close proves that a native tool stopped. See the [runner contract](internal/codex/README.md) for protocol and account limits.
+## 7. Workspace access
 
-## 7. Workspace boundary
+Pi starts in `/workspace`. Its tools can create, edit, rename, and delete workspace files and make network requests. The app does not keep a log of each file operation.
 
-The agent's working directory and shell home are `/workspace`. It can use native tools to create, edit, rename, and delete its files. There is no file broker, Telegram file approval, or external alias. The app does not keep a log of each file operation.
-
-The `companion-workspace` profile gives the shell network access, read access to minimal runtime files, and write access to `/workspace`. The profile does not expose the sign-in files directly, and the shell does not inherit the app-server environment. Network access lets the shell reach the unauthenticated loopback WebSocket and send requests directly to Codex without Companion’s checks. Codex treats the workspace project as untrusted. Keep app credentials, app state, host directories, and sockets out of the workspace. Back up files that the agent must not lose.
-
-The shell boundary does not control app-server network requests. Native live web search can send queries and turn context to OpenAI. Account-side apps and plugins can operate outside the shell sandbox if they do not require client approval. Use an account without those integrations if they must not be available.
+Companion does not add a tool sandbox inside the runner. Pi and its tools can read the runner's model credentials and reach the shared sockets. A shell command can use the socket directly. The runner does not mount the app's Telegram token, state, or host directories. Run only work you trust and back up files that the agent must not lose.
 
 ## 8. Telegram output and delivery
 
@@ -134,7 +131,7 @@ The app does not provide exactly-once execution for model turns, native tools, o
 - Each commit rewrites the snapshot. The app removes finished requests from the pending queue. It does not prune history or delivery incidents. It sends up to 20 conversation records per prompt.
 - Stop both services before backing up state and workspace. Protect both backups as private data. `docker compose down` keeps named volumes. `docker compose down -v` removes app state and workspace but not the external sign-in volume.
 
-Run `go test -race ./...` for tests of configuration, Telegram HTTP behavior, request queues, state, delivery, and the Codex protocol. Run [`tests/run.sh`](tests/run.sh) for the app image with fake Telegram and Codex peers. Run [`tests/runner.sh`](tests/runner.sh) for native file operations, workspace persistence, and shell boundary checks with real Codex and a local model fixture. Both Docker tests use disposable volumes and do not contact Telegram or OpenAI.
+Run `go test -race ./...` for tests of configuration, Telegram HTTP behavior, request queues, state, delivery, and the Pi bridge. Run [`tests/run.sh`](tests/run.sh) for a Docker test with real Pi, a local model fixture, and a fake Telegram API. It checks progress, final delivery, restart recovery, and workspace persistence. It uses disposable volumes and does not contact Telegram or a live model provider.
 
 ## Application settings
 
@@ -142,5 +139,5 @@ Run `go test -race ./...` for tests of configuration, Telegram HTTP behavior, re
 | --- | --- | --- |
 | `COMPANION_CONFIG` | `companion.json` | `/etc/companion/companion.json`; change the host source with `COMPANION_CONFIG_SOURCE` |
 | `COMPANION_STATE_DIR` | `./state` | `/app/state` |
-| `COMPANION_CODEX_URL` | `ws://127.0.0.1:4500` | Same |
+| `COMPANION_SOCKET_DIR` | `/run/companion` | Same in both containers; use a short path to fit Unix socket limits |
 | `COMPANION_TELEGRAM_URL` | `https://api.telegram.org` | Same; override only for a trusted fixture |

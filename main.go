@@ -10,18 +10,26 @@ import (
 	"syscall"
 	"time"
 
-	"companion/internal/codex"
 	"companion/internal/engine"
+	"companion/internal/pi"
 	"companion/internal/telegram"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx); err != nil {
+	if err := start(ctx); err != nil {
 		slog.Error("Companion stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func start(ctx context.Context) error {
+	if len(os.Args) == 2 && os.Args[1] == "runner" {
+		return pi.Serve(ctx, envDefault("COMPANION_SOCKET_DIR", pi.DefaultSocketDir), "/workspace",
+			"/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/companion-send-message.ts")
+	}
+	return run(ctx)
 }
 
 func run(ctx context.Context) error {
@@ -30,7 +38,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	bot := telegram.New(cfg.TelegramURL, cfg.Token, cfg.ChatID)
-	runner := codex.Client{URL: cfg.CodexURL, Model: cfg.Model, ThinkingLevel: cfg.ThinkingLevel}
+	runner := pi.Client{SocketDir: cfg.SocketDir, Provider: cfg.Provider, Model: cfg.Model, ThinkingLevel: cfg.ThinkingLevel}
 	app, err := engine.Open(cfg.StateDir, runner)
 	if err != nil {
 		return fmt.Errorf("open chat state: %w", err)

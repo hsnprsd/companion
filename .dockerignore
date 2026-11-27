@@ -1,11 +1,11 @@
 *
 !Dockerfile
 !go.mod
-!go.sum
 !/*.go
 !internal/
 !internal/**/
 !internal/**/*.go
+!internal/pi/send-message.ts
 !tests/
 !tests/*.go
 **/.bot-token
@@ -13,4 +13,4 @@
 **/.tg-chat-id
 **/companion.json
 **/auth.json
-**/.codex/
+**/.pi/

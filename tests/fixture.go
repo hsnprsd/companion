@@ -56,7 +56,7 @@ func main() {
 }
 
 func run(args []string) error {
-	if slices.Equal(args, []string{"serve"}) || slices.Equal(args, []string{"serve-telegram"}) {
+	if slices.Equal(args, []string{"serve"}) {
 		f := new(fixture)
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST "+botPath+"getUpdates", f.poll)
@@ -67,11 +67,8 @@ func run(args []string) error {
 		})
 		mux.HandleFunc("POST /updates", f.enqueue)
 		mux.HandleFunc("GET /status", f.status)
-		if args[0] == "serve" {
-			ws := &http.Server{Addr: "127.0.0.1:4500", Handler: http.HandlerFunc(f.codex), ReadHeaderTimeout: 5 * time.Second}
-			go func() { log.Fatal(ws.ListenAndServe()) }()
-		}
-		s := &http.Server{Addr: "127.0.0.1:8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+		mux.HandleFunc("POST /v1/chat/completions", f.model)
+		s := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		return s.ListenAndServe()
 	}
 	if len(args) != 0 {
@@ -133,7 +130,7 @@ func run(args []string) error {
 			}
 		}
 	}
-	return errors.New("use serve, serve-telegram, status, send/replay ID CHAT TYPE TEXT, offset ID, count KIND SUBSTRING, or wait KIND SUBSTRING COUNT")
+	return errors.New("use serve, status, send/replay ID CHAT TYPE TEXT, offset ID, count KIND SUBSTRING, or wait KIND SUBSTRING COUNT")
 }
 
 type envelope struct {

@@ -9,27 +9,31 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"companion/internal/pi"
 )
 
 type config struct {
+	Provider      string
 	Model         string
 	ThinkingLevel string
 	Token         string
 	ChatID        int64
 	TelegramURL   string
-	CodexURL      string
+	SocketDir     string
 	StateDir      string
 }
 
 var (
 	botTokenPattern = regexp.MustCompile(`^[0-9]{1,20}:[A-Za-z0-9_-]{20,100}$`)
-	modelPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	providerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	modelPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
 )
 
 func loadConfig() (config, error) {
 	c := config{
 		TelegramURL: envDefault("COMPANION_TELEGRAM_URL", "https://api.telegram.org"),
-		CodexURL:    envDefault("COMPANION_CODEX_URL", "ws://127.0.0.1:4500"),
+		SocketDir:   envDefault("COMPANION_SOCKET_DIR", pi.DefaultSocketDir),
 		StateDir:    envDefault("COMPANION_STATE_DIR", "./state"),
 	}
 	data, err := readSmallFile(configPath(), 4096)
@@ -37,13 +41,17 @@ func loadConfig() (config, error) {
 		return config{}, fmt.Errorf("read Companion configuration: %w", err)
 	}
 	file := struct {
+		Provider      string  `json:"provider"`
 		Model         string  `json:"model"`
 		ThinkingLevel *string `json:"thinking-level"`
 		Token         *string `json:"tg-bot-token"`
 		ChatID        *int64  `json:"tg-chat-id"`
-	}{ThinkingLevel: new("medium")} // An explicit JSON null clears this default.
+	}{Provider: "openai", ThinkingLevel: new("medium")} // A null thinking level clears the default.
 	if json.Unmarshal(data, &file) != nil {
 		return config{}, errors.New("invalid Companion configuration; see companion.example.json")
+	}
+	if !providerPattern.MatchString(file.Provider) {
+		return config{}, errors.New("provider must contain a valid Pi provider ID")
 	}
 	if !modelPattern.MatchString(file.Model) {
 		return config{}, errors.New("model must contain a valid model ID")
@@ -67,13 +75,10 @@ func loadConfig() (config, error) {
 	if *file.ChatID <= 0 {
 		return config{}, errors.New("tg-chat-id must be a positive integer for a private chat")
 	}
-	c.Model, c.Token, c.ChatID = file.Model, *file.Token, *file.ChatID
+	c.Provider, c.Model, c.Token, c.ChatID = file.Provider, file.Model, *file.Token, *file.ChatID
 
 	if !validEndpoint(c.TelegramURL, "https", "http") {
 		return config{}, errors.New("COMPANION_TELEGRAM_URL must be an HTTP(S) base URL without credentials, query or fragment")
-	}
-	if !validEndpoint(c.CodexURL, "ws", "wss") {
-		return config{}, errors.New("COMPANION_CODEX_URL must be a WS(S) URL without credentials, query or fragment")
 	}
 	return c, nil
 }

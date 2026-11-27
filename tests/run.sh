@@ -27,9 +27,11 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Use only these synthetic files. Omit thinking-level to test the default.
-printf '%s\n' '{"model":"fixture-model-v1","tg-bot-token":"123456789:docker_fixture_token_123456789","tg-chat-id":9876543210}' \
+printf '%s\n' '{"provider":"fixture","model":"fixture-model-v1","tg-bot-token":"123456789:docker_fixture_token_123456789","tg-chat-id":9876543210}' \
     > "$FIXTURE_DIR/companion.json"
-chmod 0444 "$FIXTURE_DIR/companion.json"
+printf '%s\n' '{"providers":{"fixture":{"baseUrl":"http://fixture:8080/v1","api":"openai-completions","apiKey":"disposable-fixture-key","models":[{"id":"fixture-model-v1"}]}}}' \
+    > "$FIXTURE_DIR/models.json"
+chmod 0444 "$FIXTURE_DIR/companion.json" "$FIXTURE_DIR/models.json"
 compose up --build --detach --wait --wait-timeout 30
 
 fx() { compose exec -T fixture /usr/local/bin/fixture "$@"; }
@@ -96,7 +98,8 @@ wait_message 'Send a message to ask a question, request work, or manage notes.'
 count_is turns 'Remember that I prefer short summaries.' 1
 count_is messages 'fixture resumed result' 1
 
-printf '%s\n' 'Check Telegram messages and status during slow work.'
+printf '%s\n' 'Replace the runner and check workspace persistence and progress messages.'
+compose up --detach --wait --wait-timeout 30 --no-deps --force-recreate runner
 progress='I will inspect the fixture files.'
 send 'slow-fixture'
 wait_message "$progress"
@@ -109,4 +112,5 @@ send '/status'
 wait_message 'Companion is idle.' 2
 count_is messages 'fixture full answer' 1
 
+count_is messages 'Do not deliver this ordinary assistant text.' 0
 printf '%s\n' 'Docker integration passed.'
